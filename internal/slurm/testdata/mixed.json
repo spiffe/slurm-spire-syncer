@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "Slurm": {
+      "version": {
+        "major": 24,
+        "micro": 5,
+        "minor": 11
+      }
+    }
+  },
+  "errors": [],
+  "warnings": [],
+  "jobs": [
+    {
+      "job_id": 1001,
+      "account": "physics",
+      "job_state": ["RUNNING"],
+      "partition": "compute",
+      "job_resources": {
+        "select_type": ["CORE"],
+        "cpus": 8,
+        "nodes": {
+          "count": 2,
+          "list": "node[01-02]",
+          "whole": false
+        }
+      }
+    },
+    {
+      "job_id": 1002,
+      "account": "chemistry",
+      "job_state": ["PENDING"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": {
+          "list": "node03"
+        }
+      }
+    },
+    {
+      "job_id": 1003,
+      "account": "biology",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["SOCKET"],
+        "nodes": {
+          "list": "node04"
+        }
+      }
+    },
+    {
+      "job_id": 1004,
+      "account": "math",
+      "job_state": ["RUNNING", "CONFIGURING"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": {
+          "count": 3,
+          "list": "gpu[1-3]",
+          "allocation": [
+            { "name": "gpu1", "index": 0, "cpus": { "count": 4 } },
+            { "name": "gpu2", "index": 1, "cpus": { "count": 4 } },
+            { "name": "gpu3", "index": 2, "cpus": { "count": 4 } }
+          ]
+        }
+      }
+    },
+    {
+      "job_id": 1005,
+      "account": "no-resources",
+      "job_state": ["RUNNING"]
+    },
+    {
+      "job_id": 1006,
+      "account": "completed",
+      "job_state": ["COMPLETED"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": { "list": "node09" }
+      }
+    }
+  ]
+}

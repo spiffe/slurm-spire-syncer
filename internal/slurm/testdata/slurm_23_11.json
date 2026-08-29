@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "plugin": { "type": "openapi/slurmctld", "data_parser": "data_parser/v0.0.40" },
+    "slurm": { "version": { "major": 23, "minor": 11, "micro": 4 }, "release": "23.11.4" }
+  },
+  "errors": [],
+  "warnings": [],
+  "jobs": [
+    {
+      "account": "physics",
+      "job_id": 1001,
+      "job_state": ["RUNNING"],
+      "nodes": "node[01-02]",
+      "job_resources": {
+        "nodes": "node[01-02]",
+        "allocated_cores": 4,
+        "allocated_cpus": 0,
+        "allocated_hosts": 2,
+        "allocated_nodes": [
+          {
+            "sockets": { "0": { "cores": { "0": "allocated_and_in_use" } } },
+            "nodename": "node01",
+            "cpus_used": 2,
+            "memory_used": 0,
+            "memory_allocated": 0
+          },
+          {
+            "sockets": { "0": { "cores": { "0": "allocated_and_in_use" } } },
+            "nodename": "node02",
+            "cpus_used": 2,
+            "memory_used": 0,
+            "memory_allocated": 0
+          }
+        ]
+      }
+    },
+    {
+      "account": "chemistry",
+      "job_id": 1002,
+      "job_state": ["RUNNING"],
+      "nodes": "node03",
+      "job_resources": {
+        "nodes": "node03",
+        "allocated_cores": 0,
+        "allocated_cpus": 2,
+        "allocated_hosts": 1,
+        "allocated_nodes": [
+          { "nodename": "node03", "cpus_used": 2, "memory_used": 0, "memory_allocated": 0 }
+        ]
+      }
+    },
+    {
+      "account": "biology",
+      "job_id": 1003,
+      "job_state": ["RUNNING"],
+      "nodes": "node04",
+      "job_resources": {
+        "nodes": "node[04-05]",
+        "allocated_cores": 2,
+        "allocated_cpus": 0,
+        "allocated_hosts": 2,
+        "allocated_nodes": []
+      }
+    },
+    {
+      "account": "waiting",
+      "job_id": 1004,
+      "job_state": ["PENDING"],
+      "nodes": "",
+      "job_resources": {}
+    }
+  ]
+}

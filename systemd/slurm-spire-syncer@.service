@@ -1,0 +1,86 @@
+# Templated so several instances can run side by side, each syncing a different
+# SPIRE server. That is the spire-ha-agent shape, where one host runs more than
+# one spire-server and each needs its own Slurm jobs synced.
+#
+# Start an instance with the same name the SPIRE server uses:
+#
+#   systemctl start slurm-spire-syncer@main
+#
+# %i then selects that server's socket, so the two line up with no extra
+# configuration.
+#
+# Configuration lives under /etc/spire/slurm-syncer, laid out the way the SPIRE
+# packages lay out spire-server. The first of these that exists is loaded:
+#
+#   /etc/spire/slurm-syncer/%i/config      this instance, replacing the default
+#   /etc/spire/slurm-syncer/%i.conf        this instance, flat form
+#   /etc/spire/slurm-syncer/default.conf   shipped defaults, shared
+#
+# The shipped default.conf is templated and loaded with -expand-env, so most
+# deployments never write a per-instance file at all: they set the variables it
+# references in /etc/spire/slurm-syncer/%i.env instead.
+
+[Unit]
+Description=Sync running Slurm jobs into SPIRE registration entries (%i)
+Documentation=https://github.com/spiffe/slurm-spire-syncer
+PartOf=spire.target
+# An ordering hint, not a hard dependency: the syncer tolerates the server being
+# unavailable at any point. Its list loop reports the failure and retries, and
+# the last known job list is kept rather than being read as "nothing is running".
+After=network-online.target spire-server@%i.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Root because the SPIRE server creates its private API socket directory
+# root-owned and mode 0750. To avoid that, run as a user in the server's group
+# instead and set ReadWritePaths accordingly.
+User=root
+
+ConfigurationDirectory=spire/slurm-syncer
+
+# Derived from the instance name, which is why the instance should be named after
+# the SPIRE server instance. Overridable by either environment file below.
+Environment="SPIRE_SERVER_SOCKET=unix:///run/spire/server/sockets/%i/private/api.sock"
+
+# The leading - means "optional", and the last file to set a variable wins. The
+# trust domain file is written by the SPIRE packages and shared by every SPIFFE
+# unit on the host, so a templated `trustDomain: ${SPIFFE_TRUST_DOMAIN}` resolves
+# with nothing else to configure.
+EnvironmentFile=-/etc/spiffe/default-trust-domain.env
+EnvironmentFile=-/etc/spire/slurm-syncer/default.env
+EnvironmentFile=-/etc/spire/slurm-syncer/%i.env
+
+ExecStart=/usr/local/bin/slurm-spire-syncer -config /etc/spire/slurm-syncer -instance %i -expand-env
+
+Restart=always
+RestartSec=5s
+
+# The syncer reads configuration and Slurm state and talks to two unix sockets;
+# it writes nothing. strict alone would make /run read-only, and connecting to a
+# unix socket needs write permission on the socket inode, so the two socket
+# directories are granted explicitly rather than the whole hierarchy being
+# loosened.
+ProtectSystem=strict
+ReadOnlyPaths=/
+ReadWritePaths=/run/spire/server /run/munge
+ProtectHome=true
+ProtectHostname=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+PrivateTmp=true
+NoNewPrivileges=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+# AF_UNIX for the SPIRE and munge sockets; AF_INET and AF_INET6 for the metrics
+# listener and for squeue reaching slurmctld.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

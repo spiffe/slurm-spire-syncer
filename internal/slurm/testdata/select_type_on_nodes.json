@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "job_id": 4001,
+      "account": "nested",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "nodes": {
+          "select_type": ["CORE"],
+          "list": "n[1-2]"
+        }
+      }
+    },
+    {
+      "job_id": 4002,
+      "account": "nested-wrong-type",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "nodes": {
+          "select_type": ["SOCKET"],
+          "list": "n3"
+        }
+      }
+    }
+  ]
+}

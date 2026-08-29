@@ -1,0 +1,116 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: slurm ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      # The two images give two genuinely different squeue --json schemas, so a
+      # failure on one is worth seeing even when the other is already red.
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04 ships Slurm 23.11: no select_type, nodes as a bare
+        # hostlist string, expanded nodes under allocated_nodes[].nodename.
+        # ubuntu-26.04 ships Slurm 25.11: select_type ["CORE"], nodes.list,
+        # nodes.allocation[].name. Between them they cover both code paths in
+        # internal/slurm with a real Slurm.
+        #
+        # ubuntu-26.04 is a public preview image, so treat a failure there as
+        # suspect until it reproduces.
+        os: [ubuntu-24.04, ubuntu-26.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # spire-dev-action is not consumable as @v1: its default branch holds only
+      # a LICENSE and it has no tags. Check it out and use it as a local action,
+      # which is the same pattern its own test workflow uses.
+      - name: check out spire-dev-action
+        uses: actions/checkout@v4
+        with:
+          repository: spiffe/spire-dev-action
+          ref: init
+          path: .spire-dev-action
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build the syncer
+        run: go build -o ./slurm-spire-syncer ./cmd/slurm-spire-syncer
+
+      # node-id must match NodeName in the Slurm config: the syncer templates
+      # each entry's parent ID from the node name, and an entry whose parent is
+      # not this agent is never delivered to any workload.
+      - name: deploy SPIRE
+        id: spire
+        uses: ./.spire-dev-action
+        with:
+          mode: host
+          trust-domain: example.org
+          node-id: node1
+          workload-attestors: slurm
+
+      - name: install slurm
+        run: test/integration/scripts/install-slurm.sh
+
+      - name: set up accounting and accounts
+        run: test/integration/scripts/setup-accounting.sh
+
+      - name: install and start the syncer
+        run: test/integration/scripts/install-syncer.sh ./slurm-spire-syncer
+
+      # Built first and then run under sudo: the test reads the SPIRE server's
+      # private API socket, which is root-owned mode 0750. Building separately
+      # avoids sudo go test and its HOME and GOCACHE problems.
+      - name: run the integration tests
+        env:
+          SPIRE_AGENT_SOCKET: ${{ steps.spire.outputs.agent-socket-path }}
+        run: |
+          go test -c -o ./integration.test ./test/integration
+          sudo -E ./integration.test -test.v -test.timeout 20m
+
+      - name: collect SPIRE diagnostics
+        if: always()
+        uses: ./.spire-dev-action/diagnostics
+        with:
+          mode: host
+
+      - name: collect slurm and syncer diagnostics
+        if: always()
+        run: |
+          set +e
+          echo "::group::slurm version"
+          sinfo --version; scontrol show config | grep -iE 'SLURM_VERSION|MULTIPLE_SLURMD'
+          echo "::endgroup::"
+          echo "::group::squeue --json"
+          # The single most useful artifact when the schema assumption is what
+          # broke, which is the likeliest failure on a new Slurm.
+          squeue --json
+          echo "::endgroup::"
+          echo "::group::syncer unit and journal"
+          systemctl status "slurm-spire-syncer@main" --no-pager || true
+          sudo journalctl -u "slurm-spire-syncer@main" --no-pager -n 300
+          echo "::endgroup::"
+          echo "::group::syncer metrics"
+          curl -s http://127.0.0.1:9091/metrics | grep -E '^slurm_spire_syncer_' | grep -v '^#'
+          echo "::endgroup::"
+          echo "::group::slurm journals"
+          sudo journalctl -u slurmctld -u slurmd -u slurmdbd --no-pager -n 300
+          echo "::endgroup::"
+          echo "::group::job output"
+          for f in /tmp/slurm-spire-jobs/*.out /tmp/slurm-spire-jobs/*/RESULT; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+          echo "::endgroup::"

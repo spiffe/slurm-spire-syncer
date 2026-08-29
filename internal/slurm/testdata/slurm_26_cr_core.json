@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "plugin": { "type": "openapi/slurmctld", "data_parser": "data_parser/v0.0.46" },
+    "slurm": { "version": { "major": 26, "minor": 5, "micro": 0 }, "release": "26.05.0" }
+  },
+  "errors": [],
+  "warnings": [],
+  "jobs": [
+    {
+      "account": "physics",
+      "job_id": 2001,
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["CR_CORE", "CR_CORE_MEMORY"],
+        "cpus": 4,
+        "threads_per_core": { "set": true, "infinite": false, "number": 1 },
+        "nodes": {
+          "count": 2,
+          "select_type": ["ONE_ROW"],
+          "list": "gpu[1-2]",
+          "whole": false,
+          "allocation": [
+            { "index": 0, "name": "gpu1", "cpus": { "count": 2, "used": 2 } },
+            { "index": 1, "name": "gpu2", "cpus": { "count": 2, "used": 2 } }
+          ]
+        }
+      }
+    },
+    {
+      "account": "chemistry",
+      "job_id": 2002,
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["CR_CPU"],
+        "cpus": 2,
+        "nodes": {
+          "count": 1,
+          "list": "gpu3",
+          "whole": false,
+          "allocation": [{ "index": 0, "name": "gpu3", "cpus": { "count": 2, "used": 2 } }]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "jobs": [
+    {
+      "job_id": 3001,
+      "sluid": "s5K1KKYAYG5D00",
+      "account": "modern",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": {
+          "list": "node[1-2]"
+        }
+      }
+    },
+    {
+      "job_id": 3002,
+      "account": "no-sluid",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": {
+          "list": "node3"
+        }
+      }
+    }
+  ]
+}
