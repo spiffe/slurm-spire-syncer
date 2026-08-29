@@ -1,9 +1,11 @@
 package integration
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/spiffe/slurm-spire-syncer/internal/slurm"
+	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 )
 
 // TestJobsGetAccountScopedSVIDs is the whole point of this suite.
@@ -26,8 +28,18 @@ func TestJobsGetAccountScopedSVIDs(t *testing.T) {
 		accountB = "chemistry"
 	)
 
-	jobA := submitJob(t, accountA)
-	jobB := submitJob(t, accountB)
+	// On a multi-node leg the two jobs are pinned to different nodes, so the
+	// account assertions below also cover two different agents attesting them.
+	all := nodes(t)
+	specA := jobSpec{account: accountA}
+	specB := jobSpec{account: accountB}
+	if len(all) > 1 {
+		specA.nodeList = []string{all[0]}
+		specB.nodeList = []string{all[1]}
+	}
+
+	jobA := submitJob(t, specA)
+	jobB := submitJob(t, specB)
 	t.Cleanup(func() {
 		// Leaving jobs running would hold the node's CPUs and leave entries
 		// behind for anything that runs after this.
@@ -36,16 +48,20 @@ func TestJobsGetAccountScopedSVIDs(t *testing.T) {
 		}
 	})
 
+	// Checked before anything else, because getting it wrong is invisible until
+	// the SVID fetch times out 90 seconds later with no indication why. The
+	// entry would be created and accepted; it just would not reach any workload.
+	assertParentMatchesAgent(t, cfg)
+
 	waitForJobRunning(t, jobA)
 	waitForJobRunning(t, jobB)
 
 	t.Run("the syncer creates one entry per running job", func(t *testing.T) {
-		wantParent := expectedParentID(t, cfg)
-
-		for _, tc := range []struct{ job, account string }{
-			{jobA, accountA},
-			{jobB, accountB},
+		for _, tc := range []struct{ job, account, node string }{
+			{jobA, accountA, nodeOf(t, specA, all)},
+			{jobB, accountB, nodeOf(t, specB, all)},
 		} {
+			wantParent := expectedParentID(t, cfg, tc.node)
 			entry := waitForEntry(t, client, tc.job)
 
 			if got, want := idString(entry.SpiffeId), expectedSPIFFEID(t, cfg, tc.account, tc.job); got != want {
@@ -80,8 +96,8 @@ func TestJobsGetAccountScopedSVIDs(t *testing.T) {
 	// The assertion that matters: each job holds the identity for its own
 	// account, issued by a real agent after real attestation.
 	t.Run("each job is issued the SVID for its own account", func(t *testing.T) {
-		resultA := jobResult(t, jobA)
-		resultB := jobResult(t, jobB)
+		resultA := jobResult(t, jobA, nodeOf(t, specA, all))
+		resultB := jobResult(t, jobB, nodeOf(t, specB, all))
 
 		wantA := expectedSPIFFEID(t, cfg, accountA, jobA)
 		wantB := expectedSPIFFEID(t, cfg, accountB, jobB)
@@ -113,6 +129,56 @@ func TestJobsGetAccountScopedSVIDs(t *testing.T) {
 		}
 	})
 
+	// The assertion a two-node cluster cannot make: with three nodes and a job
+	// allocated two of them, the third must have no entry for that job. An
+	// implementation that fanned every job out across the whole cluster would
+	// pass on two nodes and fail here.
+	t.Run("a job spanning some nodes gets an entry on exactly those nodes", func(t *testing.T) {
+		if len(all) < 3 {
+			t.Skipf("needs at least 3 nodes to be meaningful, have %d", len(all))
+		}
+
+		spanned := all[:2]
+		unused := all[2]
+
+		jobC := submitJob(t, jobSpec{account: accountA, nodeList: spanned})
+		t.Cleanup(func() { _ = scancel(jobC) })
+		waitForJobRunning(t, jobC)
+
+		byParent := waitForEntryCount(t, client, jobC, len(spanned))
+
+		for _, node := range spanned {
+			want := expectedParentID(t, cfg, node)
+			entry, ok := byParent[want]
+			if !ok {
+				t.Errorf("job %s has no entry parented to %s (%s); got %v",
+					jobC, node, want, parentIDsOf(byParent))
+				continue
+			}
+			// Same job, so the same SPIFFE ID on every node it landed on. The
+			// entries differ only in which agent delivers them.
+			if got, expect := idString(entry.SpiffeId), expectedSPIFFEID(t, cfg, accountA, jobC); got != expect {
+				t.Errorf("job %s on %s: SPIFFE ID = %q, want %q", jobC, node, got, expect)
+			}
+		}
+
+		if unwanted := expectedParentID(t, cfg, unused); byParent[unwanted] != nil {
+			t.Errorf("job %s was allocated %v but also got an entry parented to unused node %s (%s)",
+				jobC, spanned, unused, unwanted)
+		}
+
+		// Each task fetched its own SVID, through the agent on its own node.
+		for _, node := range spanned {
+			result := jobResult(t, jobC, node)
+			if got, want := result["SPIFFE_ID"], expectedSPIFFEID(t, cfg, accountA, jobC); got != want {
+				t.Errorf("job %s on %s fetched %q, want %q", jobC, node, got, want)
+			}
+			if got := result["NODE"]; got != node {
+				t.Errorf("the result recorded for %s says it ran on %q", node, got)
+			}
+		}
+	})
+
 	t.Run("cancelling a job withdraws only its entry", func(t *testing.T) {
 		if err := scancel(jobA); err != nil {
 			t.Fatalf("scancel %s: %v", jobA, err)
@@ -127,4 +193,22 @@ func TestJobsGetAccountScopedSVIDs(t *testing.T) {
 			t.Fatalf("the entry for job %s disappeared too; deletion is not correctly scoped", jobB)
 		}
 	})
+}
+
+// nodeOf reports which node a job spec landed on, for asserting its parent ID.
+func nodeOf(t *testing.T, spec jobSpec, all []string) string {
+	t.Helper()
+	if len(spec.nodeList) > 0 {
+		return spec.nodeList[0]
+	}
+	return all[0]
+}
+
+func parentIDsOf(byParent map[string]*types.Entry) []string {
+	out := make([]string, 0, len(byParent))
+	for parent := range byParent {
+		out = append(out, parent)
+	}
+	sort.Strings(out)
+	return out
 }

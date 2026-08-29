@@ -37,9 +37,14 @@ fi
 # Everything this instance needs that differs from the shipped default. A short
 # interval so the test does not spend most of its time waiting.
 log "writing ${SYNCER_CONFIG_DIR}/${SYNCER_INSTANCE}.env"
+# The parent ID template has to match how this deployment's agent attested.
+# spire-dev-action host mode uses join_token, so the agent is
+# spiffe://<trust-domain>/agent/<node-id> -- not the x509pop shape the shipped
+# default assumes. Getting this wrong creates entries that are never delivered.
 sudo tee "${SYNCER_CONFIG_DIR}/${SYNCER_INSTANCE}.env" >/dev/null <<CONF
 SLURM_SYNCER_INTERVAL=2s
 SLURM_SYNCER_METRICS_ADDR=${SYNCER_METRICS_ADDR}
+SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/agent/{{.Node}}
 CONF
 
 log "validating the configuration"
@@ -49,6 +54,7 @@ sudo env "SPIFFE_TRUST_DOMAIN=${TRUST_DOMAIN}" \
   "SPIRE_SERVER_SOCKET=unix:///run/spire/server/sockets/${SYNCER_INSTANCE}/private/api.sock" \
   "SLURM_SYNCER_INTERVAL=2s" \
   "SLURM_SYNCER_METRICS_ADDR=${SYNCER_METRICS_ADDR}" \
+  "SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/agent/{{.Node}}" \
   "${SYNCER_BIN}" -config "${SYNCER_CONFIG_DIR}" -instance "${SYNCER_INSTANCE}" \
   -expand-env -validate ||
   fail "the syncer rejected its own configuration"

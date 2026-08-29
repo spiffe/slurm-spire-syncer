@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +41,11 @@ const (
 
 func TestMain(m *testing.M) {
 	if os.Getenv(enableEnv) == "" {
+		// A quiet skip is right here -- the unit CI job runs `go test ./...` and
+		// legitimately wants to skip this package. Making sure the integration
+		// workflow does NOT skip is that workflow's job: it asserts the suite
+		// actually reported a result. Staying silent about it there is how this
+		// suite first went green having tested nothing.
 		fmt.Fprintf(os.Stderr,
 			"skipping integration tests: set %s=1 to run them, "+
 				"but only on a machine prepared by test/integration/scripts\n", enableEnv)
@@ -130,26 +137,85 @@ func run(t *testing.T, name string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// submitJob submits the SVID-fetching payload under an account and returns its
-// job ID.
-func submitJob(t *testing.T, account string) string {
+// nodeCount is how many Slurm nodes this leg of the matrix runs.
+func nodeCount(t *testing.T) int {
+	t.Helper()
+	n, err := strconv.Atoi(env("SLURM_NODE_COUNT", "1"))
+	if err != nil || n < 1 {
+		t.Fatalf("SLURM_NODE_COUNT = %q, want a positive integer", env("SLURM_NODE_COUNT", "1"))
+	}
+	return n
+}
+
+// nodes returns the cluster's node names, matching scripts/lib.sh.
+func nodes(t *testing.T) []string {
+	t.Helper()
+	out := make([]string, 0, nodeCount(t))
+	for i := 1; i <= nodeCount(t); i++ {
+		out = append(out, fmt.Sprintf("node%d", i))
+	}
+	return out
+}
+
+// agentSocket returns the workload API socket a job on a node talks to.
+//
+// The rule matches spire_agent_instance in scripts/lib.sh: the first node is
+// served by the agent spire-dev-action deployed, whose instance name is its own
+// concern; every other node has an agent instance named after it.
+func agentSocket(t *testing.T, node string) string {
+	t.Helper()
+	instance := node
+	if node == env("SLURM_NODE_NAME", "node1") {
+		instance = env("SPIRE_AGENT_INSTANCE", "main")
+	}
+	return fmt.Sprintf("/run/spire/agent/sockets/%s/public/api.sock", instance)
+}
+
+// jobSpec describes a job to submit.
+type jobSpec struct {
+	account string
+	// nodeList pins the job to specific nodes. Empty lets Slurm choose.
+	nodeList []string
+}
+
+// submitJob submits the SVID-fetching payload and returns its job ID.
+func submitJob(t *testing.T, spec jobSpec) string {
 	t.Helper()
 	script := env("FETCH_SVID_SCRIPT", "test/integration/testdata/fetch-svid.sh")
 
-	args := []string{"--parsable", "--account=" + account, "--nodes=1"}
+	count := len(spec.nodeList)
+	if count == 0 {
+		count = 1
+	}
+	args := []string{
+		"--parsable",
+		"--account=" + spec.account,
+		fmt.Sprintf("--nodes=%d", count),
+	}
+	if len(spec.nodeList) > 0 {
+		args = append(args, "--nodelist="+strings.Join(spec.nodeList, ","))
+		// The socket differs per node, so the job has to resolve it at run time
+		// from SLURMD_NODENAME rather than being handed one here.
+		args = append(args, "--ntasks-per-node=1")
+	}
 	// Forwarded on the command line rather than inherited: submission drops to
 	// the unprivileged user through sudo, which strips the environment, so an
-	// exported variable would never reach the job.
-	if sock := os.Getenv("SPIRE_AGENT_SOCKET"); sock != "" {
-		args = append(args, "--export=ALL,SPIRE_AGENT_SOCKET="+sock)
+	// exported variable would never reach the job. The directory is passed
+	// rather than a socket path because a job may span nodes with different
+	// agents; the job script picks its own from SLURMD_NODENAME.
+	exports := []string{"ALL",
+		"SPIRE_AGENT_SOCKET_DIR=/run/spire/agent/sockets",
+		"SPIRE_PRIMARY_NODE=" + env("SLURM_NODE_NAME", "node1"),
+		"SPIRE_PRIMARY_AGENT_INSTANCE=" + env("SPIRE_AGENT_INSTANCE", "main"),
 	}
+	args = append(args, "--export="+strings.Join(exports, ","))
 	args = append(args, script)
 
 	id := run(t, "sbatch", args...)
 	if id == "" {
-		t.Fatalf("sbatch --account=%s returned no job id", account)
+		t.Fatalf("sbatch --account=%s returned no job id", spec.account)
 	}
-	t.Logf("submitted job %s under account %s", id, account)
+	t.Logf("submitted job %s under account %s on %v", id, spec.account, spec.nodeList)
 	return id
 }
 
@@ -180,17 +246,68 @@ func managedEntries(t *testing.T, c *spireentry.Client) []*types.Entry {
 	return entries
 }
 
-// entryForJob returns the managed entry carrying this job's selector, or nil.
-func entryForJob(entries []*types.Entry, jobID string) *types.Entry {
+// entriesForJob returns every managed entry carrying this job's selector.
+//
+// A job allocated several nodes produces one entry per node, all sharing the job
+// selector and differing in parent ID.
+func entriesForJob(entries []*types.Entry, jobID string) []*types.Entry {
 	want := "job_id:" + jobID
+	var out []*types.Entry
 	for _, e := range entries {
 		for _, s := range e.Selectors {
 			if s.Type == slurm.SelectorType && s.Value == want {
-				return e
+				out = append(out, e)
+				break
 			}
 		}
 	}
+	return out
+}
+
+// entryForJob returns the single managed entry for a job, or nil.
+func entryForJob(entries []*types.Entry, jobID string) *types.Entry {
+	if found := entriesForJob(entries, jobID); len(found) > 0 {
+		return found[0]
+	}
 	return nil
+}
+
+// waitForEntryCount polls until a job has exactly the expected number of
+// entries, then returns them keyed by the parent ID that owns each.
+func waitForEntryCount(t *testing.T, c *spireentry.Client, jobID string, want int) map[string]*types.Entry {
+	t.Helper()
+	deadline := time.Now().Add(convergeTimeout)
+	var found []*types.Entry
+	for time.Now().Before(deadline) {
+		found = entriesForJob(managedEntries(t, c), jobID)
+		if len(found) == want {
+			byParent := make(map[string]*types.Entry, len(found))
+			for _, e := range found {
+				byParent[idString(e.ParentId)] = e
+			}
+			// A duplicate parent would silently collapse the map and hide a real
+			// bug, so the count has to survive the keying too.
+			if len(byParent) != want {
+				t.Fatalf("job %s produced %d entries but only %d distinct parents: %v",
+					jobID, len(found), len(byParent), parentIDs(found))
+			}
+			return byParent
+		}
+		time.Sleep(pollInterval)
+	}
+	dumpDiagnostics(t)
+	t.Fatalf("job %s has %d entries after %s, want %d (parents: %v)",
+		jobID, len(found), convergeTimeout, want, parentIDs(found))
+	return nil
+}
+
+func parentIDs(entries []*types.Entry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, idString(e.ParentId))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // waitForEntry polls until the syncer has created this job's entry.
@@ -223,10 +340,13 @@ func waitForEntryGone(t *testing.T, c *spireentry.Client, jobID string) {
 		jobID, convergeTimeout)
 }
 
-// jobResult reads what the job recorded about the SVID it was issued.
-func jobResult(t *testing.T, jobID string) map[string]string {
+// jobResult reads what a job recorded about the SVID it was issued on one node.
+//
+// Keyed by node because a job spanning nodes fetches once per node, and each
+// task's identity has to be checked separately.
+func jobResult(t *testing.T, jobID, node string) map[string]string {
 	t.Helper()
-	path := fmt.Sprintf("%s/%s/RESULT", jobDir, jobID)
+	path := fmt.Sprintf("%s/%s/%s/RESULT", jobDir, jobID, node)
 
 	deadline := time.Now().Add(convergeTimeout)
 	for time.Now().Before(deadline) {
@@ -245,7 +365,7 @@ func jobResult(t *testing.T, jobID string) map[string]string {
 	}
 
 	dumpJobLog(t, jobID)
-	t.Fatalf("job %s never recorded a fetched SVID at %s", jobID, path)
+	t.Fatalf("job %s on node %s never recorded a fetched SVID at %s", jobID, node, path)
 	return nil
 }
 
@@ -261,14 +381,40 @@ func expectedSPIFFEID(t *testing.T, cfg *config.Config, account, jobID string) s
 	return "spiffe://" + id.TrustDomain + id.Path
 }
 
-func expectedParentID(t *testing.T, cfg *config.Config) string {
+func expectedParentID(t *testing.T, cfg *config.Config, node string) string {
 	t.Helper()
-	host := slurm.JobHost{Node: env("SLURM_NODE_NAME", "node1")}
+	host := slurm.JobHost{Node: node}
 	id, err := syncer.RenderID(cfg.ParentIDTemplate, host.TemplateData(cfg.TrustDomain, cfg.ClassName))
 	if err != nil {
 		t.Fatalf("rendering the expected parent ID: %v", err)
 	}
 	return "spiffe://" + id.TrustDomain + id.Path
+}
+
+// assertParentMatchesAgent checks that the configured parentIDTemplate renders to
+// the SPIFFE ID of the agent actually serving this node.
+//
+// SPIRE delivers an entry only to the agent named as its parent, so a template
+// that renders to anything else produces entries that exist, look correct, and
+// are never handed to a workload. The agent's ID depends on how it attested --
+// join_token gives /agent/<node-id>, x509pop gives /spire/agent/x509pop/<...> --
+// so this cannot be assumed from the trust domain alone.
+func assertParentMatchesAgent(t *testing.T, cfg *config.Config) {
+	t.Helper()
+
+	want := os.Getenv("SPIRE_AGENT_ID")
+	if want == "" {
+		t.Skip("SPIRE_AGENT_ID is not set; cannot check the parent ID against the real agent")
+	}
+
+	got := expectedParentID(t, cfg, env("SLURM_NODE_NAME", "node1"))
+	if got != want {
+		t.Fatalf("parentIDTemplate renders to %q for node %q, but the agent serving it is %q.\n"+
+			"Entries would be created and never delivered. Set "+
+			"SLURM_SYNCER_PARENT_ID_TEMPLATE to match how the agent attested.",
+			got, env("SLURM_NODE_NAME", "node1"), want)
+	}
+	t.Logf("parent ID template resolves to the serving agent: %s", got)
 }
 
 func idString(id *types.SPIFFEID) string {

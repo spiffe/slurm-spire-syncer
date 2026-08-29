@@ -80,12 +80,21 @@ default_account="${SLURM_ACCOUNTS%%,*}"
 sudo sacctmgr -i add user "${RUNNER_USER}" \
   "account=${SLURM_ACCOUNTS}" "defaultaccount=${default_account}" 2>/dev/null || true
 
-log "restarting slurmctld to pick up the accounting configuration"
+log "restarting slurm to pick up the accounting configuration"
 sudo systemctl restart slurmctld
-sudo systemctl restart slurmd
-poll 60 "node ${SLURM_NODE_NAME} to become idle again" \
-  sh -c "sinfo -h -N -n '${SLURM_NODE_NAME}' -o '%T' | grep -qx idle" ||
-  fail "node did not return to idle after enabling accounting"
+if [ "${SLURM_NODE_COUNT}" -le 1 ]; then
+  sudo systemctl restart slurmd
+else
+  while IFS= read -r node; do
+    sudo systemctl restart "slurmd@${node}"
+  done < <(slurm_nodes)
+fi
+
+while IFS= read -r node; do
+  poll 60 "node ${node} to become idle again" \
+    sh -c "sinfo -h -N -n '${node}' -o '%T' | grep -qx idle" ||
+    fail "node ${node} did not return to idle after enabling accounting"
+done < <(slurm_nodes)
 
 # Prove the associations actually exist, rather than trusting that sacctmgr's
 # output was suppressed for the right reason. Every `add` above is tolerant of

@@ -18,14 +18,29 @@
 
 set -uo pipefail
 
-SOCK="${SPIRE_AGENT_SOCKET:-/run/spire/agent/sockets/main/public/api.sock}"
+# Resolved here rather than passed in, because a job can span nodes served by
+# different agents: every task has to find the agent on the node it landed on.
+# The rule matches spire_agent_instance in scripts/lib.sh -- the first node uses
+# the instance spire-dev-action deployed, every other is named after its node.
+if [ -n "${SPIRE_AGENT_SOCKET:-}" ]; then
+    SOCK="${SPIRE_AGENT_SOCKET}"
+else
+    SOCK_DIR="${SPIRE_AGENT_SOCKET_DIR:-/run/spire/agent/sockets}"
+    INSTANCE="${SLURMD_NODENAME:-}"
+    if [ -z "${INSTANCE}" ] || [ "${INSTANCE}" = "${SPIRE_PRIMARY_NODE:-node1}" ]; then
+        INSTANCE="${SPIRE_PRIMARY_AGENT_INSTANCE:-main}"
+    fi
+    SOCK="${SOCK_DIR}/${INSTANCE}/public/api.sock"
+fi
 BIN="${SPIRE_AGENT_BIN:-spire-agent}"
-WORKDIR="/tmp/slurm-spire-jobs/${SLURM_JOB_ID}"
+# Keyed by node as well as job: a job spanning nodes runs this once per node,
+# and each has its own identity to record.
+WORKDIR="/tmp/slurm-spire-jobs/${SLURM_JOB_ID}/${SLURMD_NODENAME:-unknown}"
 MARKER="${WORKDIR}/RESULT"
 
 mkdir -p "${WORKDIR}"
 
-echo "job ${SLURM_JOB_ID} account=${SLURM_JOB_ACCOUNT:-unknown} node=${SLURMD_NODENAME:-unknown}"
+echo "job ${SLURM_JOB_ID} account=${SLURM_JOB_ACCOUNT:-unknown} node=${SLURMD_NODENAME:-unknown} socket=${SOCK}"
 # The cgroup path is what the slurm workload attestor matches on; printing it
 # makes an attestation failure diagnosable from the job log alone.
 echo "cgroup: $(cat /proc/self/cgroup 2>/dev/null || echo unavailable)"
@@ -41,6 +56,7 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
                 echo "FETCH_SUCCESS job=${SLURM_JOB_ID}"
                 echo "SPIFFE_ID=${SPIFFE_ID}"
                 echo "ACCOUNT=${SLURM_JOB_ACCOUNT:-unknown}"
+                echo "NODE=${SLURMD_NODENAME:-unknown}"
             } > "${MARKER}"
             echo "job ${SLURM_JOB_ID} was issued ${SPIFFE_ID} after ${attempt} attempt(s)"
 

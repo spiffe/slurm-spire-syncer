@@ -11,7 +11,46 @@ set -euo pipefail
 # node-id and the syncer's parentIDTemplate cannot drift apart. The whole test
 # turns on them matching: the entry's parent ID has to be the agent that serves
 # the workload, or no SVID is ever issued.
+: "${SLURM_NODE_COUNT:=1}"
 : "${SLURM_NODE_NAME:=node1}"
+
+# slurm_nodes — the node names in this cluster, one per line.
+#
+# Every node beyond the first exists only because Ubuntu's slurm-wlm is built
+# with --enable-multiple-slurmd, which gives each slurmd its own
+# /system.slice/<nodename>_slurmstepd.scope cgroup tree and its own munge replay
+# window. Without that the daemons collide on one shared scope.
+slurm_nodes() {
+  local i
+  for i in $(seq 1 "${SLURM_NODE_COUNT}"); do
+    echo "node${i}"
+  done
+}
+
+# slurmd_port <node> — the port that node's slurmd listens on. They share a
+# host, so they cannot share the default.
+slurmd_port() {
+  echo $((6817 + ${1#node}))
+}
+
+# spire_agent_instance <node> — the SPIRE agent instance serving a node.
+#
+# The first node is served by the agent spire-dev-action deployed, whose instance
+# name is its own concern and not the node name. Every additional node gets an
+# agent instance named after it. One rule, written down once, because the test
+# and the setup scripts both need it and disagreeing would be invisible.
+spire_agent_instance() {
+  if [ "$1" = "${SLURM_NODE_NAME}" ]; then
+    echo "${SPIRE_AGENT_INSTANCE:-main}"
+  else
+    echo "$1"
+  fi
+}
+
+# spire_agent_socket <node> — the workload API socket a job on that node uses.
+spire_agent_socket() {
+  echo "/run/spire/agent/sockets/$(spire_agent_instance "$1")/public/api.sock"
+}
 : "${TRUST_DOMAIN:=example.org}"
 : "${SLURM_ACCOUNTS:=physics,chemistry}"
 
@@ -26,8 +65,8 @@ set -euo pipefail
 
 : "${JOB_DIR:=/tmp/slurm-spire-jobs}"
 
-export SLURM_NODE_NAME TRUST_DOMAIN SLURM_ACCOUNTS SYNCER_INSTANCE SYNCER_CONFIG_DIR \
-  SYNCER_BIN SYNCER_METRICS_ADDR JOB_DIR
+export SLURM_NODE_COUNT SLURM_NODE_NAME TRUST_DOMAIN SLURM_ACCOUNTS SYNCER_INSTANCE \
+  SYNCER_CONFIG_DIR SYNCER_BIN SYNCER_METRICS_ADDR JOB_DIR
 
 log() { echo "[$(basename "${0}")] $*"; }
 

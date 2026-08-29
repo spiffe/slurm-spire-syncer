@@ -11,14 +11,19 @@ permissions:
 
 jobs:
   integration:
-    name: slurm ${{ matrix.os }}
+    name: slurm ${{ matrix.os }} (${{ matrix.nodes }}-node)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
-      # The two images give two genuinely different squeue --json schemas, so a
-      # failure on one is worth seeing even when the other is already red.
+      # Each leg is independently informative -- a different squeue schema or a
+      # different cluster shape -- so one failing should not cancel the rest.
       fail-fast: false
       matrix:
+        # 1 node is the ordinary case. 3 is the smallest cluster where a job
+        # allocated a subset leaves a node with no entry for it: on two nodes a
+        # two-node job spans everything, so an implementation that fanned every
+        # job across the whole cluster would pass.
+        nodes: [1, 3]
         # ubuntu-24.04 ships Slurm 23.11: no select_type, nodes as a bare
         # hostlist string, expanded nodes under allocated_nodes[].nodename.
         # ubuntu-26.04 ships Slurm 25.11: select_type ["CORE"], nodes.list,
@@ -63,12 +68,26 @@ jobs:
           workload-attestors: slurm
 
       - name: install slurm
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
         run: test/integration/scripts/install-slurm.sh
 
       - name: set up accounting and accounts
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
         run: test/integration/scripts/setup-accounting.sh
 
+      # One SPIRE agent per node beyond the first, so each node's entries have a
+      # distinct parent and the per-node mapping is actually exercised. A no-op
+      # on the single-node leg.
+      - name: add a SPIRE agent per node
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: test/integration/scripts/install-spire-agents.sh
+
       - name: install and start the syncer
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
         run: test/integration/scripts/install-syncer.sh ./slurm-spire-syncer
 
       # Built first and then run under sudo: the test reads the SPIRE server's
@@ -76,10 +95,25 @@ jobs:
       # avoids sudo go test and its HOME and GOCACHE problems.
       - name: run the integration tests
         env:
+          # Without this the suite skips and the job goes green having tested
+          # nothing, which is exactly what happened the first time this ran.
+          SLURM_SPIRE_SYNCER_INTEGRATION: "1"
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
           SPIRE_AGENT_SOCKET: ${{ steps.spire.outputs.agent-socket-path }}
+          SPIRE_AGENT_ID: ${{ steps.spire.outputs.agent-spiffe-id }}
         run: |
+          set -o pipefail
           go test -c -o ./integration.test ./test/integration
-          sudo -E ./integration.test -test.v -test.timeout 20m
+          sudo -E ./integration.test -test.v -test.timeout 20m 2>&1 |
+            tee /tmp/integration.log
+
+          # A positive assertion that the suite ran. If the enabling variable
+          # above is ever dropped the binary skips, exits 0, and the job goes
+          # green having tested nothing.
+          if ! grep -q '^--- PASS: TestJobsGetAccountScopedSVIDs' /tmp/integration.log; then
+            echo "::error::the integration suite did not report a result; it was probably skipped"
+            exit 1
+          fi
 
       - name: collect SPIRE diagnostics
         if: always()
@@ -89,6 +123,8 @@ jobs:
 
       - name: collect slurm and syncer diagnostics
         if: always()
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
         run: |
           set +e
           echo "::group::slurm version"
@@ -106,8 +142,16 @@ jobs:
           echo "::group::syncer metrics"
           curl -s http://127.0.0.1:9091/metrics | grep -E '^slurm_spire_syncer_' | grep -v '^#'
           echo "::endgroup::"
+          echo "::group::slurm nodes"
+          sinfo -N -l || true
+          echo "::endgroup::"
           echo "::group::slurm journals"
-          sudo journalctl -u slurmctld -u slurmd -u slurmdbd --no-pager -n 300
+          units="-u slurmctld -u slurmd -u slurmdbd"
+          for i in $(seq 1 "${SLURM_NODE_COUNT:-1}"); do
+            units="${units} -u slurmd@node${i} -u spire-agent@node${i}"
+          done
+          # shellcheck disable=SC2086
+          sudo journalctl ${units} --no-pager -n 400
           echo "::endgroup::"
           echo "::group::job output"
           for f in /tmp/slurm-spire-jobs/*.out /tmp/slurm-spire-jobs/*/RESULT; do
