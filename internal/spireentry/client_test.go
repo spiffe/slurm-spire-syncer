@@ -38,7 +38,7 @@ func entry(id, hint string) *types.Entry {
 		},
 		ParentId: &types.SPIFFEID{
 			TrustDomain: "example.org",
-			Path:        "/spire/agent/x509pop/node1",
+			Path:        "/node/node1",
 		},
 		Selectors: []*types.Selector{{Type: "slurm", Value: "job_id:1"}},
 	}

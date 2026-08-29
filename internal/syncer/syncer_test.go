@@ -142,8 +142,8 @@ func TestSyncerCreatesEntriesForRunningJobs(t *testing.T) {
 	}
 
 	e := h.entryByID("slurm.uuid-1")
-	if e.ParentId.Path != "/spire/agent/x509pop/node01" {
-		t.Errorf("parent ID path = %q, want the node's agent path", e.ParentId.Path)
+	if e.ParentId.Path != "/node/node01" {
+		t.Errorf("parent ID path = %q, want the node alias path", e.ParentId.Path)
 	}
 	if e.SpiffeId.Path != "/slurm/physics/1001" {
 		t.Errorf("SPIFFE ID path = %q, want /slurm/physics/1001", e.SpiffeId.Path)
@@ -297,14 +297,14 @@ func TestSyncerLeavesUnownedEntriesAlone(t *testing.T) {
 			Id:        "otherapp.abc",
 			Hint:      "slurm", // same hint, different owner
 			SpiffeId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/other/workload"},
-			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/x509pop/node01"},
+			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/node/node01"},
 			Selectors: []*types.Selector{{Type: "unix", Value: "uid:1000"}},
 		},
 		&types.Entry{
 			Id:        "slurm.manual",
 			Hint:      "hand-made", // our prefix, different hint
 			SpiffeId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/manual/workload"},
-			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/x509pop/node02"},
+			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/node/node02"},
 			Selectors: []*types.Selector{{Type: "unix", Value: "uid:1001"}},
 		},
 	)
@@ -330,7 +330,7 @@ func TestSyncerWaitsForBothSnapshots(t *testing.T) {
 		Id:        "slurm.existing",
 		Hint:      "slurm",
 		SpiffeId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/slurm/physics/1"},
-		ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/x509pop/node01"},
+		ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/node/node01"},
 		Selectors: []*types.Selector{{Type: "slurm", Value: "job_id:1"}},
 	})
 

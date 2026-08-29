@@ -43,6 +43,10 @@ For a job on a node it produces one entry:
 | Selectors | exactly one: `slurm:job_id:<id>` or `slurm:sluid:<sluid>` |
 | Hint | `hint` (default `slurm`) |
 
+The parent ID is what decides which SPIRE agent an entry reaches, so it has to
+name an identity the agent serving that node actually holds. See
+[node aliases](#node-aliases).
+
 **Only the job identifier is used as a selector, never the step.** SPIRE matches an entry
 when its selectors are a *subset* of the workload's, so one job-scoped entry covers every
 step of that job — `batch`, `extern` and every numbered step — with a single registration.
@@ -51,6 +55,47 @@ Template fields: `.TrustDomain`, `.ClassName`, `.JobID`, `.SLUID`, `.JobKey`, `.
 `.Node`. `.JobKey` is the identifier actually in use (the SLUID when there is one).
 Templates are compiled with `missingkey=error`, so a reference to a field that does not
 exist fails loudly instead of rendering `<no value>` into a SPIFFE ID.
+
+## Node aliases
+
+SPIRE hands a registration entry to the agent named as its parent, so each entry
+this syncer creates has to be parented to something the agent on that node holds.
+
+The default is a **node alias**:
+
+```
+spiffe://<trust-domain>/node/<slurm-node-name>
+```
+
+An alias is an entry parented to the SPIRE server rather than to a workload,
+selected on whatever identifies that machine to your node attestor. Create one
+per Slurm node, once:
+
+```bash
+spire-server entry create -node \
+    -spiffeID spiffe://example.org/node/node1 \
+    -selector x509pop:subject:cn:node1
+```
+
+The selector depends on your node attestor — the example above is `x509pop` with
+the node name in the certificate CN.
+
+**Why not parent to the agent's own SPIFFE ID?** Because there is no single shape
+for it. An agent attested with `join_token` is
+`spiffe://<td>/spire/agent/join_token/<token>`, with `x509pop` it is
+`spiffe://<td>/spire/agent/x509pop/<fingerprint>` unless `agent_path_template`
+says otherwise, and other attestors differ again. Any default built on one of
+those is wrong everywhere else, and wrong in a way that is invisible: the entries
+are created and accepted, and simply never reach a workload. An alias makes the
+mapping from Slurm node to SPIRE identity explicit and independent of how the
+agent attested.
+
+The alias path has to match the name **Slurm** uses for the node, which is what
+`{{.Node}}` renders to. If that differs from the machine's hostname, follow
+Slurm.
+
+To use a different shape, set `SLURM_SYNCER_PARENT_ID_TEMPLATE` — see
+[running under systemd](#running-under-systemd).
 
 ## Ownership, and why deletion is safe
 
@@ -283,8 +328,19 @@ and all are optional:
 | File | For |
 | --- | --- |
 | `/etc/spiffe/default-trust-domain.env` | `SPIFFE_TRUST_DOMAIN`, shared with every SPIFFE unit on the host |
-| `/etc/spire/slurm-syncer/default.env` | variables shared by every instance |
+| `/etc/spire/slurm-syncer/default.env` | the packaged defaults, shared by every instance |
 | `/etc/spire/slurm-syncer/<instance>.env` | variables for one instance |
+
+The shipped `default.env` sets the templates and leaves the rest empty, which
+each setting reads as "use the built-in default". The variables it defines:
+
+| Variable | Default when empty |
+| --- | --- |
+| `SLURM_SYNCER_PARENT_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/node/{{.Node}}` |
+| `SLURM_SYNCER_SPIFFE_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}` |
+| `SLURM_SYNCER_INTERVAL` | `10s` |
+| `SLURM_SYNCER_CLASS_NAME` | `slurm` |
+| `SLURM_SYNCER_METRICS_ADDR` | disabled |
 
 ### Running several instances
 

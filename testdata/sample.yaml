@@ -29,7 +29,7 @@ spireServerSocket: unix:///tmp/spire-server/private/api.sock
 # where the attestor emits job_id even though squeue reports a SLUID.
 jobIdentifier: auto
 
-parentIDTemplate: "spiffe://{{.TrustDomain}}/spire/agent/x509pop/{{.Node}}"
+parentIDTemplate: "spiffe://{{.TrustDomain}}/node/{{.Node}}"
 spiffeIDTemplate: "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"
 
 # 0 (or omitted) uses the SPIRE server defaults.

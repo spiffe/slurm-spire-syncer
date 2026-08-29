@@ -20,10 +20,12 @@ sudo install -m 0755 "${BINARY}" "${SYNCER_BIN}"
 # written, so this exercises the path a fresh deployment actually takes: the
 # packaged default, templated, with everything that differs supplied through the
 # instance's environment file.
-log "installing ${REPO_ROOT}/config/slurm-syncer/default.conf"
+log "installing the packaged defaults"
 sudo mkdir -p "${SYNCER_CONFIG_DIR}"
 sudo install -m 0644 "${REPO_ROOT}/config/slurm-syncer/default.conf" \
   "${SYNCER_CONFIG_DIR}/default.conf"
+sudo install -m 0644 "${REPO_ROOT}/config/slurm-syncer/default.env" \
+  "${SYNCER_CONFIG_DIR}/default.env"
 
 # Written by the SPIRE packages in a real deployment; supplied here only if the
 # SPIRE deployment did not leave one.
@@ -37,10 +39,15 @@ fi
 # Everything this instance needs that differs from the shipped default. A short
 # interval so the test does not spend most of its time waiting.
 log "writing ${SYNCER_CONFIG_DIR}/${SYNCER_INSTANCE}.env"
-# The parent ID template has to match how this deployment's agent attested.
-# spire-dev-action host mode uses join_token, so the agent is
-# spiffe://<trust-domain>/agent/<node-id> -- not the x509pop shape the shipped
-# default assumes. Getting this wrong creates entries that are never delivered.
+# The parent ID template has to name something the serving agent actually holds.
+# The packaged default.env expects a node alias, spiffe://<td>/node/<node>, which
+# an operator creates once per node; this deployment has no aliases, and
+# spire-dev-action attests with join_token, so the agent holds
+# spiffe://<td>/agent/<node-id> instead.
+#
+# Overriding it here rather than creating aliases keeps the test pointed at what
+# the deployment really provides, and exercises the layering: this file is read
+# after default.env, so it wins.
 sudo tee "${SYNCER_CONFIG_DIR}/${SYNCER_INSTANCE}.env" >/dev/null <<CONF
 SLURM_SYNCER_INTERVAL=2s
 SLURM_SYNCER_METRICS_ADDR=${SYNCER_METRICS_ADDR}

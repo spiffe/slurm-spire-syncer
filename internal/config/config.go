@@ -36,8 +36,14 @@ const (
 	DefaultHint              = "slurm"
 	DefaultSqueueTimeout     = 30 * time.Second
 	DefaultSpireServerSocket = "unix:///tmp/spire-server/private/api.sock"
-	DefaultParentIDTemplate  = "spiffe://{{.TrustDomain}}/spire/agent/x509pop/{{.Node}}"
-	DefaultSpiffeIDTemplate  = "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"
+	// A node alias rather than an agent's own SPIFFE ID. An agent's ID depends on
+	// how it attested -- x509pop, join_token and the rest all produce different
+	// shapes -- so anything derived from it ties this default to one attestor.
+	// A node alias is an entry the operator creates per node, parented to the
+	// server and selected on that node's attestation selectors, which makes the
+	// mapping from Slurm node to SPIRE identity explicit and attestor-agnostic.
+	DefaultParentIDTemplate = "spiffe://{{.TrustDomain}}/node/{{.Node}}"
+	DefaultSpiffeIDTemplate = "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"
 
 	// hintMaximumLength mirrors the SPIRE server's own limit
 	// (spire/pkg/server/api/entry.go). Exceeding it is rejected server-side, so

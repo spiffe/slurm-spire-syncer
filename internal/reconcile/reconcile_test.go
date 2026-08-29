@@ -50,7 +50,7 @@ func jobSelectors(job string) []*types.Selector {
 // template shapes.
 func desiredFor(job, node, account string) Desired {
 	return Desired{
-		ParentID:  id("/spire/agent/x509pop/" + node),
+		ParentID:  id("/node/" + node),
 		SpiffeID:  id("/slurm/" + account + "/" + job),
 		Selectors: jobSelectors(job),
 		Node:      node,
@@ -62,7 +62,7 @@ func desiredFor(job, node, account string) Desired {
 func entryFor(entryID, job, node, account string) *types.Entry {
 	return &types.Entry{
 		Id:        entryID,
-		ParentId:  id("/spire/agent/x509pop/" + node),
+		ParentId:  id("/node/" + node),
 		SpiffeId:  id("/slurm/" + account + "/" + job),
 		Selectors: jobSelectors(job),
 		Hint:      testHint,
@@ -224,7 +224,7 @@ func TestDiffLeavesUnownedEntriesAlone(t *testing.T) {
 			name: "right hint, foreign ID prefix",
 			entry: &types.Entry{
 				Id:        "otherapp.xyz",
-				ParentId:  id("/spire/agent/x509pop/node9"),
+				ParentId:  id("/node/node9"),
 				SpiffeId:  id("/other/thing"),
 				Selectors: jobSelectors("999"),
 				Hint:      testHint,
@@ -234,7 +234,7 @@ func TestDiffLeavesUnownedEntriesAlone(t *testing.T) {
 			name: "right ID prefix, foreign hint",
 			entry: &types.Entry{
 				Id:        "slurm.xyz",
-				ParentId:  id("/spire/agent/x509pop/node9"),
+				ParentId:  id("/node/node9"),
 				SpiffeId:  id("/other/thing"),
 				Selectors: jobSelectors("999"),
 				Hint:      "something-else",
@@ -244,7 +244,7 @@ func TestDiffLeavesUnownedEntriesAlone(t *testing.T) {
 			name: "neither marker",
 			entry: &types.Entry{
 				Id:        "otherapp.xyz",
-				ParentId:  id("/spire/agent/x509pop/node9"),
+				ParentId:  id("/node/node9"),
 				SpiffeId:  id("/other/thing"),
 				Selectors: jobSelectors("999"),
 				Hint:      "",
