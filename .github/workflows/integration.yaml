@@ -104,14 +104,34 @@ jobs:
         run: |
           set -o pipefail
           go test -c -o ./integration.test ./test/integration
-          sudo -E ./integration.test -test.v -test.timeout 20m 2>&1 |
+
+          # Variables are handed over explicitly rather than with sudo -E.
+          # ubuntu-26.04's sudo policy refuses it -- "preserving the entire
+          # environment is not supported, '-E' is ignored" -- and the binary then
+          # ran with none of these set and quietly skipped. ubuntu-24.04 allows
+          # -E, so this only broke on one leg. `sudo env` needs no such
+          # permission, and sudo still sets SUDO_USER, which the test uses to
+          # drop back to the unprivileged user for sbatch.
+          sudo env \
+            SLURM_SPIRE_SYNCER_INTEGRATION="${SLURM_SPIRE_SYNCER_INTEGRATION}" \
+            SLURM_NODE_COUNT="${SLURM_NODE_COUNT}" \
+            SLURM_NODE_NAME="${SLURM_NODE_NAME:-node1}" \
+            SPIRE_AGENT_INSTANCE="${SPIRE_AGENT_INSTANCE:-main}" \
+            SYNCER_INSTANCE="${SYNCER_INSTANCE:-main}" \
+            SPIRE_AGENT_SOCKET="${SPIRE_AGENT_SOCKET}" \
+            SPIRE_AGENT_ID="${SPIRE_AGENT_ID}" \
+            ./integration.test -test.v -test.timeout 20m 2>&1 |
             tee /tmp/integration.log
 
-          # A positive assertion that the suite ran. If the enabling variable
-          # above is ever dropped the binary skips, exits 0, and the job goes
-          # green having tested nothing.
+          # A positive assertion that the suite actually ran. A genuine test
+          # failure aborts above on pipefail, so reaching here with no PASS line
+          # means the binary exited 0 without running anything.
           if ! grep -q '^--- PASS: TestJobsGetAccountScopedSVIDs' /tmp/integration.log; then
-            echo "::error::the integration suite did not report a result; it was probably skipped"
+            if grep -q 'skipping integration tests' /tmp/integration.log; then
+              echo "::error::the integration suite skipped; the enabling variable did not reach the test binary"
+            else
+              echo "::error::the integration suite exited without reporting a result"
+            fi
             exit 1
           fi
 

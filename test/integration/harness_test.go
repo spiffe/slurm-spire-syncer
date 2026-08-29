@@ -278,7 +278,18 @@ func submitJob(t *testing.T, spec jobSpec) string {
 	// exported variable would never reach the job. The directory is passed
 	// rather than a socket path because a job may span nodes with different
 	// agents; the job script picks its own from SLURMD_NODENAME.
+	// The batch script runs on one node only, so it sruns this per-node task
+	// across the allocation. sbatch copies the batch script into its spool
+	// directory, so the task cannot be found relative to it and its absolute
+	// path has to be handed over.
+	task, err := filepath.Abs(env("FETCH_SVID_TASK_SCRIPT",
+		"test/integration/testdata/fetch-svid-task.sh"))
+	if err != nil {
+		t.Fatalf("resolving the task script path: %v", err)
+	}
+
 	exports := []string{"ALL",
+		"FETCH_TASK_SCRIPT=" + task,
 		"SPIRE_AGENT_SOCKET_DIR=/run/spire/agent/sockets",
 		"SPIRE_PRIMARY_NODE=" + env("SLURM_NODE_NAME", "node1"),
 		"SPIRE_PRIMARY_AGENT_INSTANCE=" + env("SPIRE_AGENT_INSTANCE", "main"),
