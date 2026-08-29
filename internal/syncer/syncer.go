@@ -116,6 +116,18 @@ func (s *Syncer) gatherJobs(ctx context.Context) error {
 }
 
 func (s *Syncer) gatherEntries(ctx context.Context) error {
+	return s.refreshEntries(ctx)
+}
+
+// refreshEntries re-lists the managed entries and publishes a new snapshot.
+//
+// Separate from the loop so the reconciler can call it after writing. The three
+// loops run independently, so a reconcile that creates entries leaves its own
+// view of them stale: the next reconcile, arriving before the list loop has run
+// again, would see none of what it just created and try to create it all over
+// again. SPIRE rejects the duplicates, so nothing is corrupted, but the syncer
+// spends every cycle in between re-sending creates it knows will fail.
+func (s *Syncer) refreshEntries(ctx context.Context) error {
 	entries, err := s.spire.ListManaged(ctx)
 	if err != nil {
 		return err
@@ -210,6 +222,15 @@ func (s *Syncer) apply(ctx context.Context, plan reconcile.Plan) error {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
+	}
+
+	// The snapshot this reconcile worked from no longer describes the server,
+	// because this function just changed it. Refreshing here rather than waiting
+	// for the list loop stops the next reconcile from redoing the same work
+	// against a stale view.
+	if err := s.refreshEntries(ctx); err != nil {
+		s.log.Debug("could not refresh the entry list after applying changes; "+
+			"the list loop will catch up", "error", err)
 	}
 
 	if len(errs) > 0 {

@@ -26,8 +26,15 @@ fi
 sudo chown munge:munge /etc/munge/munge.key
 sudo chmod 0400 /etc/munge/munge.key
 
-sudo mkdir -p /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
+sudo mkdir -p /var/spool/slurmctld /var/log/slurm
 sudo chown slurm:slurm /var/spool/slurmctld /var/log/slurm
+
+# SlurmdSpoolDir is per-node (see the %n in slurm.conf below) and slurmd does not
+# create it: without these, every start logs "Domain socket directory
+# /var/spool/slurmd.<node>: No such file or directory".
+while IFS= read -r node; do
+  sudo install -d -m 0755 "/var/spool/slurmd.${node}"
+done < <(slurm_nodes)
 
 # Every node has to resolve for slurmctld to reach its slurmd.
 while IFS= read -r node; do

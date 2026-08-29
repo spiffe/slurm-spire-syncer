@@ -154,7 +154,8 @@ jobs:
           sudo journalctl ${units} --no-pager -n 400
           echo "::endgroup::"
           echo "::group::job output"
-          for f in /tmp/slurm-spire-jobs/*.out /tmp/slurm-spire-jobs/*/RESULT; do
+          # RESULT moved a level deeper when it became per-node: <job>/<node>/RESULT.
+          for f in /tmp/slurm-spire-jobs/*.out /tmp/slurm-spire-jobs/*/*/RESULT; do
             [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
           done
           echo "::endgroup::"

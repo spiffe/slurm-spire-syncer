@@ -192,6 +192,47 @@ func TestSyncerIsIdempotent(t *testing.T) {
 	}
 }
 
+// A reconcile that creates entries must not try to create them again on the next
+// pass just because the entry list has not been re-read.
+//
+// The three loops run independently, so the snapshot a reconcile works from is
+// stale the moment it writes. Without refreshing, every reconcile between a
+// create and the next listing re-sent creates the server rejects as duplicates.
+// In CI this showed up as the syncer logging its own fresh entries as belonging
+// to someone else, two seconds after creating them.
+func TestSyncerDoesNotRecreateAfterItsOwnWrites(t *testing.T) {
+	h := newHarness(t, "")
+	h.setJobs(job("1001", "physics", "node01"))
+
+	ctx := context.Background()
+	if err := h.syncer.gatherJobs(ctx); err != nil {
+		t.Fatalf("gatherJobs: %v", err)
+	}
+	if err := h.syncer.gatherEntries(ctx); err != nil {
+		t.Fatalf("gatherEntries: %v", err)
+	}
+	if err := h.syncer.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n := len(h.server.CreateRequests()); n != 1 {
+		t.Fatalf("BatchCreateEntry called %d times on the first reconcile, want 1", n)
+	}
+
+	// Deliberately no gatherEntries here: this is the interleaving the loops
+	// produce, and the reconciler has to cope with it on its own.
+	if err := h.syncer.reconcile(ctx); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	if n := len(h.server.CreateRequests()); n != 1 {
+		t.Errorf("BatchCreateEntry called %d times after a second reconcile, want 1: "+
+			"the reconciler is working from a snapshot that predates its own writes", n)
+	}
+	if got := h.entryIDs(); len(got) != 1 {
+		t.Errorf("entry IDs = %v, want exactly one", got)
+	}
+}
+
 func TestSyncerDeletesEntriesForFinishedJobs(t *testing.T) {
 	h := newHarness(t, "")
 	h.setJobs(

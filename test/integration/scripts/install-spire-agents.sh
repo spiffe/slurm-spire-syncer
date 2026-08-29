@@ -68,14 +68,28 @@ while IFS= read -r node; do
     fail "the agent for ${node} never became healthy"
   }
 
-  # Prove it attested as the intended identity rather than merely coming up: a
-  # wrong SPIFFE ID here would surface much later as entries that are never
-  # delivered.
-  listed="$(sudo spire-server agent list -socketPath "${SERVER_SOCKET}" 2>/dev/null || true)"
-  printf '%s' "${listed}" | grep -qF "${agent_id}" ||
-    fail "agent for ${node} is not registered as ${agent_id}; server reports: ${listed}"
+  # Prove the agent actually holds the identity the syncer will name as a
+  # parent, rather than merely coming up: getting this wrong surfaces much later
+  # as entries that are created, look right, and are never delivered.
+  #
+  # Checked against the entry list, not `agent list`. A join-token agent always
+  # *attests* as spiffe://<td>/spire/agent/join_token/<token>; the -spiffeID
+  # given above is registered as an entry granting it that identity in addition,
+  # and it is that identity an entry's parent ID refers to. This is the same
+  # mechanism spire-dev-action relies on for the first node.
+  alias="$(sudo spire-server entry show \
+    -spiffeID "${agent_id}" -socketPath "${SERVER_SOCKET}" 2>&1 || true)"
+  if ! printf '%s' "${alias}" | grep -qF "${agent_id}"; then
+    fail "no registration entry grants ${agent_id} to the agent for ${node}; entry show said: ${alias}"
+  fi
 
-  log "  ${node} is served by ${agent_id} on ${socket}"
+  log "  ${node} is served by an agent holding ${agent_id}, on ${socket}"
 done < <(slurm_nodes)
+
+# Printed once at the end: the attested IDs are the join-token form and look
+# nothing like the aliases above, which is confusing without this note.
+log "attested agents (join-token identities, distinct from the aliases above):"
+sudo spire-server agent list -socketPath "${SERVER_SOCKET}" 2>/dev/null |
+  grep -E 'SPIFFE ID' | sed 's/^/  /' || true
 
 log "all node agents are up"

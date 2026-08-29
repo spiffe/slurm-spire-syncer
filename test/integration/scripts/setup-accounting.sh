@@ -86,8 +86,28 @@ default_account="${SLURM_ACCOUNTS%%,*}"
 sudo sacctmgr -i add user "${RUNNER_USER}" \
   "account=${SLURM_ACCOUNTS}" "defaultaccount=${default_account}" 2>/dev/null || true
 
-log "restarting slurm to pick up the accounting configuration"
-sudo systemctl restart slurmctld
+# Slurm 25.11 records a ClusterID in StateSaveLocation and refuses to start if it
+# disagrees with the one slurmdbd holds:
+#
+#   fatal: CLUSTER ID MISMATCH. slurmctld has been started with "ClusterID=2571"
+#   from the state files in StateSaveLocation, but the DBD thinks it should be
+#   "3280". Running multiple clusters from a shared StateSaveLocation WILL CAUSE
+#   CORRUPTION.
+#
+# That is exactly the situation here: slurmctld came up before accounting
+# existed and minted its own ID, then `sacctmgr add cluster` gave the DBD a
+# different one. Removing the file is the override Slurm itself points at, and it
+# is safe because this cluster has run no jobs yet. Slurm 23.11 has no such file,
+# so this is a no-op there.
+# Stopped first, deliberately: `systemctl restart` saves state on the way down,
+# which rewrites the very file being removed. The removal has to happen while
+# nothing is running.
+log "clearing the pre-accounting cluster identity"
+sudo systemctl stop slurmctld
+sudo rm -f /var/spool/slurmctld/clustername
+
+log "starting slurm with the accounting configuration"
+sudo systemctl start slurmctld
 if [ "${SLURM_NODE_COUNT}" -le 1 ]; then
   sudo systemctl restart slurmd
 else

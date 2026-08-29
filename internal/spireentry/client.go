@@ -158,6 +158,13 @@ func (c *Client) Create(ctx context.Context, entries []*types.Entry) (int, error
 			switch code := codes.Code(res.GetStatus().GetCode()); {
 			case code == codes.OK:
 				created++
+			case code == codes.AlreadyExists && res.Entry != nil && c.Owns(res.Entry):
+				// Our own entry, from a cycle whose result had not reached the
+				// entry list yet. Benign, and not worth a warning: the next
+				// listing reconciles it away.
+				c.log.Debug("this identity is already covered by an entry of ours",
+					"requestedEntryID", requested, "existingEntryID", res.Entry.Id,
+					"spiffeID", spiffeIDString(res.Entry.SpiffeId))
 			case code == codes.AlreadyExists && res.Entry != nil && res.Entry.Id != requested:
 				c.log.Warn("an entry outside this syncer's ownership already covers this identity; leaving it alone",
 					"requestedEntryID", requested, "existingEntryID", res.Entry.Id,
