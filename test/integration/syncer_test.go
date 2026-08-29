@@ -20,6 +20,8 @@ import (
 // at the same time for the cross-account assertion to mean anything, and Go
 // gives no ordering guarantee between top-level tests.
 func TestJobsGetAccountScopedSVIDs(t *testing.T) {
+	requireIntegration(t)
+
 	cfg := loadConfig(t)
 	client := entryClient(t, cfg)
 

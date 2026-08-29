@@ -30,7 +30,9 @@ spireServerSocket: unix:///tmp/spire-server/private/api.sock
 jobIdentifier: auto
 
 parentIDTemplate: "spiffe://{{.TrustDomain}}/node/{{.Node}}"
-spiffeIDTemplate: "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"
+# Scoped to the account, not the job: a job identifier is too short-lived to
+# write authorisation policy against. Append /{{.JobKey}} for per-job identities.
+spiffeIDTemplate: "spiffe://{{.TrustDomain}}/slurm/{{.Account}}"
 
 # 0 (or omitted) uses the SPIRE server defaults.
 x509SVIDTTL: 1h

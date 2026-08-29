@@ -145,8 +145,10 @@ func TestSyncerCreatesEntriesForRunningJobs(t *testing.T) {
 	if e.ParentId.Path != "/node/node01" {
 		t.Errorf("parent ID path = %q, want the node alias path", e.ParentId.Path)
 	}
-	if e.SpiffeId.Path != "/slurm/physics/1001" {
-		t.Errorf("SPIFFE ID path = %q, want /slurm/physics/1001", e.SpiffeId.Path)
+	// Account-scoped by default: the job identifier lives in the selector, not
+	// the identity.
+	if e.SpiffeId.Path != "/slurm/physics" {
+		t.Errorf("SPIFFE ID path = %q, want /slurm/physics", e.SpiffeId.Path)
 	}
 	if e.SpiffeId.TrustDomain != "example.org" {
 		t.Errorf("trust domain = %q, want example.org", e.SpiffeId.TrustDomain)
@@ -253,7 +255,7 @@ func TestSyncerDeletesEntriesForFinishedJobs(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("entry IDs = %v, want one entry after job 1002 finished", got)
 	}
-	if h.entryByID(got[0]).SpiffeId.Path != "/slurm/physics/1001" {
+	if h.entryByID(got[0]).SpiffeId.Path != "/slurm/physics" {
 		t.Errorf("surviving entry = %q, want the one for job 1001", got[0])
 	}
 }
@@ -277,7 +279,7 @@ func TestSyncerUpdatesInPlaceOnAccountChange(t *testing.T) {
 	if !equalStrings(before, after) {
 		t.Fatalf("entry IDs = %v, want them preserved at %v across an update", after, before)
 	}
-	if got := h.entryByID(after[0]).SpiffeId.Path; got != "/slurm/chemistry/1001" {
+	if got := h.entryByID(after[0]).SpiffeId.Path; got != "/slurm/chemistry" {
 		t.Errorf("SPIFFE ID path = %q, want the new account", got)
 	}
 	if n := len(h.server.UpdateRequests()); n != 1 {
@@ -424,7 +426,9 @@ spiffeIDTemplate: "spiffe://{{.TrustDomain}}/{{.ClassName}}/{{.Account}}/job/{{.
 }
 
 func TestSyncerUsesSLUIDSelectorWhenPresent(t *testing.T) {
-	h := newHarness(t, "")
+	// A per-job template on purpose: the default identity is account-scoped and
+	// never renders .JobKey, so it could not show which identifier was chosen.
+	h := newHarness(t, `spiffeIDTemplate: "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"`)
 	writeFixture(t, h.fixture, `{"jobs":[{"job_id":5,"sluid":"s5K1KKYAYG5D00","account":"modern",`+
 		`"job_state":["RUNNING"],"job_resources":{"select_type":["CORE"],"nodes":{"list":"n1"}}}]}`)
 	h.cycle()

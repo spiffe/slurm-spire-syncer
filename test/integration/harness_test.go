@@ -40,19 +40,24 @@ const (
 	pollInterval    = 2 * time.Second
 )
 
-func TestMain(m *testing.M) {
+// requireIntegration skips a test that needs a machine prepared by
+// test/integration/scripts -- a real Slurm cluster and a real SPIRE deployment.
+//
+// Gating per test rather than in TestMain so that the parts which are pure logic,
+// like the environment-file layering below, still run on a developer's machine.
+// Those are exactly the parts worth catching before a twenty-minute CI leg: the
+// layering bug this guards against was invisible locally when the whole package
+// skipped.
+//
+// The unit CI job runs `go test ./...` and legitimately skips the heavy tests.
+// Making sure the integration workflow does not skip them is that workflow's job;
+// it asserts the suite reported a PASS.
+func requireIntegration(t *testing.T) {
+	t.Helper()
 	if os.Getenv(enableEnv) == "" {
-		// A quiet skip is right here -- the unit CI job runs `go test ./...` and
-		// legitimately wants to skip this package. Making sure the integration
-		// workflow does NOT skip is that workflow's job: it asserts the suite
-		// actually reported a result. Staying silent about it there is how this
-		// suite first went green having tested nothing.
-		fmt.Fprintf(os.Stderr,
-			"skipping integration tests: set %s=1 to run them, "+
-				"but only on a machine prepared by test/integration/scripts\n", enableEnv)
-		os.Exit(0)
+		t.Skipf("set %s=1 to run this, but only on a machine prepared by "+
+			"test/integration/scripts", enableEnv)
 	}
-	os.Exit(m.Run())
 }
 
 // env reads a setting with a default, keeping the test and the setup scripts
@@ -102,36 +107,33 @@ func loadConfig(t *testing.T) *config.Config {
 // so the test expands the configuration file exactly as the running syncer did.
 //
 // The order mirrors systemd/slurm-spire-syncer@.service: the Environment=
-// directive first, then each EnvironmentFile in turn, last value winning.
-// Variables already present in this process are left alone, so anything the
-// workflow set deliberately still overrides the files.
+// directive first, then each EnvironmentFile in turn, with **later files
+// overriding earlier ones**. That last part is the whole point of the layering --
+// the packaged default.env supplies the defaults and <instance>.env overrides
+// them -- and getting it backwards means the test expects a different
+// configuration from the one the syncer is running under.
 func loadUnitEnvironment(t *testing.T, dir, instance string) {
 	t.Helper()
 
 	// The unit derives this from the instance name; there is no file to read it
-	// from, so it is derived the same way here.
-	setIfUnset(t, "SPIRE_SERVER_SOCKET",
+	// from, so it is derived the same way here. Set before the files, because
+	// the unit's Environment= line comes before its EnvironmentFile lines and a
+	// file is allowed to override it.
+	t.Setenv("SPIRE_SERVER_SOCKET",
 		fmt.Sprintf("unix:///run/spire/server/sockets/%s/private/api.sock", instance))
 
 	// All optional, matching the unit's leading "-". The trust domain file is
 	// written by the SPIRE packages and is where SPIFFE_TRUST_DOMAIN comes from.
+	// Applied in order, last value winning, exactly as systemd does.
 	for _, path := range []string{
 		"/etc/spiffe/default-trust-domain.env",
 		filepath.Join(dir, "default.env"),
 		filepath.Join(dir, instance+".env"),
 	} {
 		for key, value := range readEnvFile(t, path) {
-			setIfUnset(t, key, value)
+			t.Setenv(key, value)
 		}
 	}
-}
-
-func setIfUnset(t *testing.T, key, value string) {
-	t.Helper()
-	if _, ok := os.LookupEnv(key); ok {
-		return
-	}
-	t.Setenv(key, value)
 }
 
 // readEnvFile parses a systemd EnvironmentFile: KEY=value per line, blank lines
@@ -537,3 +539,93 @@ func scancel(jobID string) error {
 }
 
 func hasPrefix(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
+
+// The layering is the whole point of shipping a default.env: it supplies the
+// defaults and <instance>.env overrides them. systemd applies EnvironmentFiles in
+// order with the last value winning, and reproducing that backwards makes the
+// test expect a different configuration from the one the syncer is running under
+// -- which is what happened the first time a default.env existed.
+//
+// Runs without a prepared machine, so it fails on a laptop rather than twenty
+// minutes into CI.
+func TestLoadUnitEnvironmentPrefersLaterFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("default.env", strings.Join([]string{
+		"# the packaged default",
+		"SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/node/{{.Node}}",
+		"SLURM_SYNCER_CLASS_NAME=slurm",
+		"",
+	}, "\n"))
+	write("main.env", strings.Join([]string{
+		"SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/agent/{{.Node}}",
+		"",
+	}, "\n"))
+
+	loadUnitEnvironment(t, dir, "main")
+
+	if got, want := os.Getenv("SLURM_SYNCER_PARENT_ID_TEMPLATE"),
+		"spiffe://{{.TrustDomain}}/agent/{{.Node}}"; got != want {
+		t.Errorf("parent template = %q, want %q from the per-instance file, which is read last",
+			got, want)
+	}
+	// Anything the instance file does not mention keeps the packaged default.
+	if got, want := os.Getenv("SLURM_SYNCER_CLASS_NAME"), "slurm"; got != want {
+		t.Errorf("class name = %q, want the packaged default %q", got, want)
+	}
+	// Derived from the instance name by the unit's Environment= line.
+	if got := os.Getenv("SPIRE_SERVER_SOCKET"); !strings.Contains(got, "/sockets/main/") {
+		t.Errorf("server socket = %q, want it derived from the instance name", got)
+	}
+}
+
+// A systemd EnvironmentFile is not shell: comments and blank lines are ignored,
+// and surrounding quotes are stripped from the value.
+func TestReadEnvFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.env")
+	content := strings.Join([]string{
+		"# a comment",
+		"",
+		"PLAIN=value",
+		`QUOTED="has spaces"`,
+		"SPACED  =  trimmed  ",
+		"WITH_EQUALS=a=b",
+		"EMPTY=",
+		"not-a-pair",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readEnvFile(t, path)
+	for key, want := range map[string]string{
+		"PLAIN":       "value",
+		"QUOTED":      "has spaces",
+		"SPACED":      "trimmed",
+		"WITH_EQUALS": "a=b",
+		"EMPTY":       "",
+	} {
+		if got[key] != want {
+			t.Errorf("%s = %q, want %q", key, got[key], want)
+		}
+	}
+	if _, ok := got["not-a-pair"]; ok {
+		t.Error("a line with no = was parsed as a variable")
+	}
+	if len(got) != 5 {
+		t.Errorf("parsed %d variables, want 5: %v", len(got), got)
+	}
+
+	// Every file in the stack is optional in the unit, so a missing one is not
+	// an error.
+	if n := len(readEnvFile(t, filepath.Join(t.TempDir(), "absent.env"))); n != 0 {
+		t.Errorf("a missing file yielded %d variables, want 0", n)
+	}
+}

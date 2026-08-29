@@ -331,16 +331,40 @@ and all are optional:
 | `/etc/spire/slurm-syncer/default.env` | the packaged defaults, shared by every instance |
 | `/etc/spire/slurm-syncer/<instance>.env` | variables for one instance |
 
-The shipped `default.env` sets the templates and leaves the rest empty, which
-each setting reads as "use the built-in default". The variables it defines:
+`default.env` supplies the values `default.conf` references. Any variable left
+empty falls back to the syncer's own built-in default, so an instance file only
+has to name what it changes.
 
-| Variable | Default when empty |
-| --- | --- |
-| `SLURM_SYNCER_PARENT_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/node/{{.Node}}` |
-| `SLURM_SYNCER_SPIFFE_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}` |
-| `SLURM_SYNCER_INTERVAL` | `10s` |
-| `SLURM_SYNCER_CLASS_NAME` | `slurm` |
-| `SLURM_SYNCER_METRICS_ADDR` | disabled |
+| Variable | Shipped in `default.env` | Built-in, when left empty |
+| --- | --- | --- |
+| `SLURM_SYNCER_PARENT_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/node/{{.Node}}` | same |
+| `SLURM_SYNCER_SPIFFE_ID_TEMPLATE` | `spiffe://{{.TrustDomain}}/slurm/{{.Account}}` | same |
+| `SLURM_SYNCER_INTERVAL` | `10s` | `10s` |
+| `SLURM_SYNCER_CLASS_NAME` | `slurm` | `slurm` |
+| `SLURM_SYNCER_METRICS_ADDR` | unset | disabled |
+
+The shipped SPIFFE ID is scoped to the **account**, not the job: every job an
+account runs receives the same identity.
+
+That is deliberate, and it is about stability. A job identifier lasts as long as
+the job does, so anything that authorises on it has to be updated for every new
+job — which in practice pushes people to wildcard the job away, giving up the
+precision they were paying for. An account outlives any job, so a policy written
+once against `spiffe://<td>/slurm/physics` keeps working as jobs come and go. The
+account is also the thing sites already manage and reason about.
+
+The cost is that two jobs running concurrently under one account are
+indistinguishable to whatever they connect to. Append `/{{.JobKey}}` if a
+relying party genuinely needs to tell them apart:
+
+```ini
+# /etc/spire/slurm-syncer/<instance>.env
+SLURM_SYNCER_SPIFFE_ID_TEMPLATE=spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}
+```
+
+Either way an entry is still created per job, because the selector carries the
+job identifier and the attestor matches on it. Only the identity handed out is
+shared, and it still exists solely while that job runs.
 
 ### Running several instances
 

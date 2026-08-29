@@ -43,7 +43,13 @@ const (
 	// server and selected on that node's attestation selectors, which makes the
 	// mapping from Slurm node to SPIRE identity explicit and attestor-agnostic.
 	DefaultParentIDTemplate = "spiffe://{{.TrustDomain}}/node/{{.Node}}"
-	DefaultSpiffeIDTemplate = "spiffe://{{.TrustDomain}}/slurm/{{.Account}}/{{.JobKey}}"
+	// Scoped to the account rather than the job, deliberately. A job identifier
+	// lasts only as long as its job, so anything authorising on it must be
+	// reissued per job -- which in practice means wildcarding the job away. An
+	// account outlives any job, so a policy written against it keeps working.
+	// Append /{{.JobKey}} where a relying party has to tell concurrent jobs in
+	// one account apart.
+	DefaultSpiffeIDTemplate = "spiffe://{{.TrustDomain}}/slurm/{{.Account}}"
 
 	// hintMaximumLength mirrors the SPIRE server's own limit
 	// (spire/pkg/server/api/entry.go). Exceeding it is rejected server-side, so

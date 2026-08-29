@@ -55,16 +55,31 @@ SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/agent/{{.Node}}
 CONF
 
 log "validating the configuration"
-# The same flags and the same resolution the unit uses, so a template that cannot
-# resolve fails here rather than as a service that will not start.
-sudo env "SPIFFE_TRUST_DOMAIN=${TRUST_DOMAIN}" \
-  "SPIRE_SERVER_SOCKET=unix:///run/spire/server/sockets/${SYNCER_INSTANCE}/private/api.sock" \
-  "SLURM_SYNCER_INTERVAL=2s" \
-  "SLURM_SYNCER_METRICS_ADDR=${SYNCER_METRICS_ADDR}" \
-  "SLURM_SYNCER_PARENT_ID_TEMPLATE=spiffe://{{.TrustDomain}}/agent/{{.Node}}" \
+# Sourced from the same files the unit reads, in the same order, rather than
+# hand-listed. Hand-listing had already drifted: it omitted the SPIFFE ID
+# template, so -validate reported a configuration the service would never run.
+#
+# No sudo: -validate only reads the configuration and renders the templates, and
+# never opens the SPIRE socket. Running unprivileged also proves the files are
+# readable by a non-root user.
+(
+  set -a
+  # Set before the files, matching the unit, where Environment= precedes every
+  # EnvironmentFile and a file may override it.
+  SPIRE_SERVER_SOCKET="unix:///run/spire/server/sockets/${SYNCER_INSTANCE}/private/api.sock"
+  for env_file in /etc/spiffe/default-trust-domain.env \
+    "${SYNCER_CONFIG_DIR}/default.env" \
+    "${SYNCER_CONFIG_DIR}/${SYNCER_INSTANCE}.env"; do
+    if [ -r "${env_file}" ]; then
+      # shellcheck disable=SC1090
+      . "${env_file}"
+    fi
+  done
+  set +a
+
   "${SYNCER_BIN}" -config "${SYNCER_CONFIG_DIR}" -instance "${SYNCER_INSTANCE}" \
-  -expand-env -validate ||
-  fail "the syncer rejected its own configuration"
+    -expand-env -validate
+) || fail "the syncer rejected its own configuration"
 
 log "installing the systemd unit"
 sudo install -m 0644 "${REPO_ROOT}/systemd/slurm-spire-syncer@.service" \
