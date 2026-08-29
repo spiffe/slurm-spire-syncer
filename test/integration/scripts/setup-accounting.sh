@@ -43,8 +43,14 @@ StorageUser=${DB_USER}
 StoragePass=${DB_PASS}
 StorageLoc=${DB_NAME}
 LogFile=/var/log/slurm/slurmdbd.log
-PidFile=/run/slurmdbd.pid
+# Under /run/slurmdbd rather than /run directly: slurmdbd drops to the slurm
+# user, which cannot create a file in /run, and logs "Unable to open pidfile ...
+# Permission denied" on every start.
+PidFile=/run/slurmdbd/slurmdbd.pid
 CONF
+
+# Created here in case the packaged unit has no RuntimeDirectory of its own.
+sudo install -d -o slurm -g slurm -m 0755 /run/slurmdbd
 # slurmdbd refuses to start if this is group- or world-readable, because it
 # holds the database password.
 sudo chown slurm:slurm /etc/slurm/slurmdbd.conf

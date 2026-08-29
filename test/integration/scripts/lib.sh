@@ -27,10 +27,15 @@ slurm_nodes() {
   done
 }
 
-# slurmd_port <node> — the port that node's slurmd listens on. They share a
-# host, so they cannot share the default.
+# slurmd_port <node> — the port that node's slurmd listens on.
+#
+# Co-located slurmd instances cannot share the default 6818, and the obvious
+# 6818+N walks straight into 6819, which is slurmdbd's DbdPort: slurmd claimed it
+# first and slurmdbd died with "Address already in use", while slurmd logged
+# "protocol_version not supported" for every accounting message it was handed by
+# mistake. 17000 is well clear of everything Slurm reserves.
 slurmd_port() {
-  echo $((6817 + ${1#node}))
+  echo $((17000 + ${1#node}))
 }
 
 # spire_agent_instance <node> — the SPIRE agent instance serving a node.

@@ -41,10 +41,15 @@ done < <(slurm_nodes)
 # rejects as a duplicate; the multiple-slurmd build this relies on drops that
 # check. NodeAddr plus a distinct Port is how slurmctld tells them apart.
 node_lines() {
-  local node
+  local node port=""
   while IFS= read -r node; do
-    echo "NodeName=${node} NodeHostname=$(hostname -s) NodeAddr=127.0.0.1" \
-      "Port=$(slurmd_port "${node}") CPUs=2 RealMemory=100 State=UNKNOWN"
+    # A single node keeps the default SlurmdPort, which is the configuration
+    # that is known to work; only co-located daemons need distinct ports.
+    if [ "${SLURM_NODE_COUNT}" -gt 1 ]; then
+      port=" Port=$(slurmd_port "${node}")"
+    fi
+    echo "NodeName=${node} NodeHostname=$(hostname -s) NodeAddr=127.0.0.1${port}" \
+      "CPUs=2 RealMemory=100 State=UNKNOWN"
   done < <(slurm_nodes)
 }
 

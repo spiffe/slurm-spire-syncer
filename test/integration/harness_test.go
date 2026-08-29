@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -73,6 +74,13 @@ func loadConfig(t *testing.T) *config.Config {
 	dir := env("SYNCER_CONFIG_DIR", "/etc/spire/slurm-syncer")
 	instance := env("SYNCER_INSTANCE", "main")
 
+	// The config is templated and the unit expands it against its own
+	// environment, which this process does not inherit: sudo -E carries the
+	// workflow's variables, not the unit's EnvironmentFile stack. Without this
+	// ${SPIFFE_TRUST_DOMAIN} expands to empty and loading fails with
+	// "trustDomain is required".
+	loadUnitEnvironment(t, dir, instance)
+
 	// Resolved exactly the way the unit resolves it, so the test reads whichever
 	// file the running syncer actually loaded rather than assuming one.
 	path, err := config.ResolvePath(dir, instance)
@@ -88,6 +96,73 @@ func loadConfig(t *testing.T) *config.Config {
 		t.Fatalf("loading the syncer config from %s: %v", path, err)
 	}
 	return cfg
+}
+
+// loadUnitEnvironment reproduces the environment systemd builds for the syncer,
+// so the test expands the configuration file exactly as the running syncer did.
+//
+// The order mirrors systemd/slurm-spire-syncer@.service: the Environment=
+// directive first, then each EnvironmentFile in turn, last value winning.
+// Variables already present in this process are left alone, so anything the
+// workflow set deliberately still overrides the files.
+func loadUnitEnvironment(t *testing.T, dir, instance string) {
+	t.Helper()
+
+	// The unit derives this from the instance name; there is no file to read it
+	// from, so it is derived the same way here.
+	setIfUnset(t, "SPIRE_SERVER_SOCKET",
+		fmt.Sprintf("unix:///run/spire/server/sockets/%s/private/api.sock", instance))
+
+	// All optional, matching the unit's leading "-". The trust domain file is
+	// written by the SPIRE packages and is where SPIFFE_TRUST_DOMAIN comes from.
+	for _, path := range []string{
+		"/etc/spiffe/default-trust-domain.env",
+		filepath.Join(dir, "default.env"),
+		filepath.Join(dir, instance+".env"),
+	} {
+		for key, value := range readEnvFile(t, path) {
+			setIfUnset(t, key, value)
+		}
+	}
+}
+
+func setIfUnset(t *testing.T, key, value string) {
+	t.Helper()
+	if _, ok := os.LookupEnv(key); ok {
+		return
+	}
+	t.Setenv(key, value)
+}
+
+// readEnvFile parses a systemd EnvironmentFile: KEY=value per line, blank lines
+// and # comments ignored, and surrounding quotes stripped. A missing file is not
+// an error, because every one of them is declared optional in the unit.
+func readEnvFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+
+	out := map[string]string{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // entryClient dials the SPIRE server's private API.
