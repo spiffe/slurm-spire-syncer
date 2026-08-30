@@ -1,0 +1,44 @@
+# Sample slurm-spire-syncer configuration.
+#
+# Check it without starting the daemon:
+#   slurm-spire-syncer -config testdata/sample.yaml -validate
+
+# Base interval for the squeue, spire_list and reconcile loops. Each can be
+# overridden individually with squeueInterval / spireInterval /
+# reconcileInterval.
+interval: 10s
+
+# Entry IDs are "<className>.<uuid>".
+className: slurm
+
+# Stamped on every entry this syncer manages, and used as the server-side
+# ByHint list filter. Ownership additionally requires the "<className>."
+# entry ID prefix, so an entry needs both markers before it is ever updated
+# or deleted.
+hint: slurm
+
+trustDomain: example.org
+
+squeueCommand: ["squeue", "--json"]
+squeueTimeout: 30s
+
+spireServerSocket: unix:///tmp/spire-server/private/api.sock
+
+# auto uses the SLUID when squeue reports one and falls back to job_id.
+# Set to job_id if the cluster runs Slurm >= 26.05 with CgroupJobIdPaths=yes,
+# where the attestor emits job_id even though squeue reports a SLUID.
+jobIdentifier: auto
+
+parentIDTemplate: "spiffe://{{.TrustDomain}}/node/{{.Node}}"
+# Scoped to the account, not the job: a job identifier is too short-lived to
+# write authorisation policy against. Append /{{.JobKey}} for per-job identities.
+spiffeIDTemplate: "spiffe://{{.TrustDomain}}/slurm/{{.Account}}"
+
+# 0 (or omitted) uses the SPIRE server defaults.
+x509SVIDTTL: 1h
+jwtSVIDTTL: 5m
+
+metricsAddr: ":9091"
+
+# Log the intended changes without touching SPIRE.
+dryRun: false

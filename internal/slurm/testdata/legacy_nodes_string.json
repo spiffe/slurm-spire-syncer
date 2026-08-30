@@ -1,0 +1,13 @@
+{
+  "jobs": [
+    {
+      "job_id": 2001,
+      "account": "legacy",
+      "job_state": ["RUNNING"],
+      "job_resources": {
+        "select_type": ["CORE"],
+        "nodes": "old[1-2]"
+      }
+    }
+  ]
+}

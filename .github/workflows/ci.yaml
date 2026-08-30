@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal ./test)"
+          if [ -n "${unformatted}" ]; then
+            echo "::error::these files need gofmt:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Check go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      # The integration tests are guarded by SLURM_SPIRE_SYNCER_INTEGRATION, which
+      # is deliberately not set here: they need a real Slurm and a real SPIRE
+      # server. See integration.yaml.
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Validate the sample configuration
+        run: go run ./cmd/slurm-spire-syncer -config testdata/sample.yaml -validate
+
+      # The shipped default.conf is what a real deployment loads, so it is checked
+      # the same way the unit loads it: as the default.conf of a config directory,
+      # with -expand-env, and with only the trust domain and socket supplied. If
+      # it needed anything else set, it would not be a usable default.
+      - name: Validate the shipped default configuration
+        env:
+          SPIFFE_TRUST_DOMAIN: example.org
+          SPIRE_SERVER_SOCKET: unix:///run/spire/server/sockets/main/private/api.sock
+        run: |
+          mkdir -p /tmp/syncer-conf
+          cp config/slurm-syncer/default.conf /tmp/syncer-conf/default.conf
+          go run ./cmd/slurm-spire-syncer \
+            -config /tmp/syncer-conf -instance main -expand-env -validate
+
+          # Without -expand-env the ${...} references reach the validator
+          # literally, which must be rejected rather than quietly accepted.
+          if go run ./cmd/slurm-spire-syncer \
+            -config /tmp/syncer-conf -instance main -validate 2>/dev/null; then
+            echo "::error::the templated default was accepted without -expand-env"
+            exit 1
+          fi

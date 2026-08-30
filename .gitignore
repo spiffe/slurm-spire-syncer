@@ -1,0 +1,6 @@
+/dist/
+/slurm-spire-syncer
+
+# `go build` with no -o in the repo root names the binary after the directory
+# containing main.go, so an accidental `go build ./cmd/...` leaves a `main` here.
+/main

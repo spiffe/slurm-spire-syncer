@@ -1,0 +1,181 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: slurm ${{ matrix.os }} (${{ matrix.nodes }}-node)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      # Each leg is independently informative -- a different squeue schema or a
+      # different cluster shape -- so one failing should not cancel the rest.
+      fail-fast: false
+      matrix:
+        # 1 node is the ordinary case. 3 is the smallest cluster where a job
+        # allocated a subset leaves a node with no entry for it: on two nodes a
+        # two-node job spans everything, so an implementation that fanned every
+        # job across the whole cluster would pass.
+        nodes: [1, 3]
+        # ubuntu-24.04 ships Slurm 23.11: no select_type, nodes as a bare
+        # hostlist string, expanded nodes under allocated_nodes[].nodename.
+        # ubuntu-26.04 ships Slurm 25.11: select_type ["CORE"], nodes.list,
+        # nodes.allocation[].name. Between them they cover both code paths in
+        # internal/slurm with a real Slurm.
+        #
+        # ubuntu-26.04 is a public preview image, so treat a failure there as
+        # suspect until it reproduces.
+        os: [ubuntu-24.04, ubuntu-26.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # spire-dev-action is not consumable as @v1: its default branch holds only
+      # a LICENSE and it has no tags. Check it out and use it as a local action,
+      # which is the same pattern its own test workflow uses.
+      - name: check out spire-dev-action
+        uses: actions/checkout@v4
+        with:
+          repository: spiffe/spire-dev-action
+          ref: init
+          path: .spire-dev-action
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build the syncer
+        run: go build -o ./slurm-spire-syncer ./cmd/slurm-spire-syncer
+
+      # node-id must match NodeName in the Slurm config: the syncer templates
+      # each entry's parent ID from the node name, and an entry whose parent is
+      # not this agent is never delivered to any workload.
+      - name: deploy SPIRE
+        id: spire
+        uses: ./.spire-dev-action
+        with:
+          mode: host
+          trust-domain: example.org
+          node-id: node1
+          workload-attestors: slurm
+
+      - name: install slurm
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: test/integration/scripts/install-slurm.sh
+
+      - name: set up accounting and accounts
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: test/integration/scripts/setup-accounting.sh
+
+      # One SPIRE agent per node beyond the first, so each node's entries have a
+      # distinct parent and the per-node mapping is actually exercised. A no-op
+      # on the single-node leg.
+      - name: add a SPIRE agent per node
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: test/integration/scripts/install-spire-agents.sh
+
+      - name: install and start the syncer
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: test/integration/scripts/install-syncer.sh ./slurm-spire-syncer
+
+      # Built first and then run under sudo: the test reads the SPIRE server's
+      # private API socket, which is root-owned mode 0750. Building separately
+      # avoids sudo go test and its HOME and GOCACHE problems.
+      - name: run the integration tests
+        env:
+          # Without this the suite skips and the job goes green having tested
+          # nothing, which is exactly what happened the first time this ran.
+          SLURM_SPIRE_SYNCER_INTEGRATION: "1"
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+          SPIRE_AGENT_SOCKET: ${{ steps.spire.outputs.agent-socket-path }}
+          SPIRE_AGENT_ID: ${{ steps.spire.outputs.agent-spiffe-id }}
+        run: |
+          set -o pipefail
+          go test -c -o ./integration.test ./test/integration
+
+          # Variables are handed over explicitly rather than with sudo -E.
+          # ubuntu-26.04's sudo policy refuses it -- "preserving the entire
+          # environment is not supported, '-E' is ignored" -- and the binary then
+          # ran with none of these set and quietly skipped. ubuntu-24.04 allows
+          # -E, so this only broke on one leg. `sudo env` needs no such
+          # permission, and sudo still sets SUDO_USER, which the test uses to
+          # drop back to the unprivileged user for sbatch.
+          sudo env \
+            SLURM_SPIRE_SYNCER_INTEGRATION="${SLURM_SPIRE_SYNCER_INTEGRATION}" \
+            SLURM_NODE_COUNT="${SLURM_NODE_COUNT}" \
+            SLURM_NODE_NAME="${SLURM_NODE_NAME:-node1}" \
+            SPIRE_AGENT_INSTANCE="${SPIRE_AGENT_INSTANCE:-main}" \
+            SYNCER_INSTANCE="${SYNCER_INSTANCE:-main}" \
+            SPIRE_AGENT_SOCKET="${SPIRE_AGENT_SOCKET}" \
+            SPIRE_AGENT_ID="${SPIRE_AGENT_ID}" \
+            ./integration.test -test.v -test.timeout 20m 2>&1 |
+            tee /tmp/integration.log
+
+          # A positive assertion that the suite actually ran. A genuine test
+          # failure aborts above on pipefail, so reaching here with no PASS line
+          # means the binary exited 0 without running anything.
+          if ! grep -q '^--- PASS: TestJobsGetAccountScopedSVIDs' /tmp/integration.log; then
+            if grep -q 'skipping integration tests' /tmp/integration.log; then
+              echo "::error::the integration suite skipped; the enabling variable did not reach the test binary"
+            else
+              echo "::error::the integration suite exited without reporting a result"
+            fi
+            exit 1
+          fi
+
+      - name: collect SPIRE diagnostics
+        if: always()
+        uses: ./.spire-dev-action/diagnostics
+        with:
+          mode: host
+
+      - name: collect slurm and syncer diagnostics
+        if: always()
+        env:
+          SLURM_NODE_COUNT: ${{ matrix.nodes }}
+        run: |
+          set +e
+          echo "::group::slurm version"
+          sinfo --version; scontrol show config | grep -iE 'SLURM_VERSION|MULTIPLE_SLURMD'
+          echo "::endgroup::"
+          echo "::group::squeue --json"
+          # The single most useful artifact when the schema assumption is what
+          # broke, which is the likeliest failure on a new Slurm.
+          squeue --json
+          echo "::endgroup::"
+          echo "::group::syncer unit and journal"
+          systemctl status "slurm-spire-syncer@main" --no-pager || true
+          sudo journalctl -u "slurm-spire-syncer@main" --no-pager -n 300
+          echo "::endgroup::"
+          echo "::group::syncer metrics"
+          curl -s http://127.0.0.1:9091/metrics | grep -E '^slurm_spire_syncer_' | grep -v '^#'
+          echo "::endgroup::"
+          echo "::group::slurm nodes"
+          sinfo -N -l || true
+          echo "::endgroup::"
+          echo "::group::slurm journals"
+          units="-u slurmctld -u slurmd -u slurmdbd"
+          for i in $(seq 1 "${SLURM_NODE_COUNT:-1}"); do
+            units="${units} -u slurmd@node${i} -u spire-agent@node${i}"
+          done
+          # shellcheck disable=SC2086
+          sudo journalctl ${units} --no-pager -n 400
+          echo "::endgroup::"
+          echo "::group::job output"
+          # RESULT moved a level deeper when it became per-node: <job>/<node>/RESULT.
+          for f in /tmp/slurm-spire-jobs/*.out /tmp/slurm-spire-jobs/*/*/RESULT; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+          echo "::endgroup::"
