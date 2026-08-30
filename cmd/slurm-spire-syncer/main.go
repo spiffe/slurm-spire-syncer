@@ -23,15 +23,30 @@ import (
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 )
 
+// Build metadata, set at link time by goreleaser. The defaults are what a plain
+// `go build` produces, so a locally built binary says so rather than claiming to
+// be a release.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	var (
-		configPath = flag.String("config", "", "path to the YAML configuration file, or to a directory laid out as <dir>/<instance>/config, <dir>/<instance>.conf, <dir>/default.conf")
-		instance   = flag.String("instance", "", "instance name, used to pick a configuration file when -config names a directory")
-		validate   = flag.Bool("validate", false, "load and validate the configuration, render the templates against a sample job, then exit")
-		expandEnv  = flag.Bool("expand-env", false, "expand ${VAR} references in the configuration file from the environment")
-		logLevel   = flag.String("log-level", "info", "log level: debug, info, warn or error")
+		configPath  = flag.String("config", "", "path to the YAML configuration file, or to a directory laid out as <dir>/<instance>/config, <dir>/<instance>.conf, <dir>/default.conf")
+		showVersion = flag.Bool("version", false, "print the version and exit")
+		instance    = flag.String("instance", "", "instance name, used to pick a configuration file when -config names a directory")
+		validate    = flag.Bool("validate", false, "load and validate the configuration, render the templates against a sample job, then exit")
+		expandEnv   = flag.Bool("expand-env", false, "expand ${VAR} references in the configuration file from the environment")
+		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn or error")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("slurm-spire-syncer %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	log, err := newLogger(*logLevel)
 	if err != nil {

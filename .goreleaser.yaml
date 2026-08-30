@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+before:
+  hooks:
+    # CI already asserts this produces no changes, so it is a no-op on a clean
+    # tree and a guard against tagging one that is not.
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    # Linux only. The syncer shells out to squeue and is deployed as a systemd
+    # unit; there is nothing for it to do on another OS.
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/slurm-spire-syncer
+    binary: slurm-spire-syncer
+    # Matches the vars in cmd/slurm-spire-syncer/main.go, so a released binary
+    # reports its version rather than "dev".
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - formats: [tar.gz]
+    # Makes the OS and architecture match what `uname` reports.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    # Everything needed to deploy, not just the binary: the templated unit and
+    # the packaged defaults it reads. Paths are preserved, so the archive mirrors
+    # where the files belong.
+    files:
+      - systemd/*
+      - config/slurm-syncer/*
+      - LICENSE
+      - README.md
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
