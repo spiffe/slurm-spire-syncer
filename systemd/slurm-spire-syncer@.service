@@ -52,7 +52,7 @@ EnvironmentFile=-/etc/spiffe/default-trust-domain.env
 EnvironmentFile=-/etc/spire/slurm-syncer/default.env
 EnvironmentFile=-/etc/spire/slurm-syncer/%i.env
 
-ExecStart=/usr/local/bin/slurm-spire-syncer -config /etc/spire/slurm-syncer -instance %i -expand-env
+ExecStart=/usr/bin/slurm-spire-syncer -config /etc/spire/slurm-syncer -instance %i -expand-env
 
 Restart=always
 RestartSec=5s

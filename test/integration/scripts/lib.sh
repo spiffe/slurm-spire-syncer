@@ -65,7 +65,7 @@ spire_agent_socket() {
 # else to configure.
 : "${SYNCER_INSTANCE:=main}"
 : "${SYNCER_CONFIG_DIR:=/etc/spire/slurm-syncer}"
-: "${SYNCER_BIN:=/usr/local/bin/slurm-spire-syncer}"
+: "${SYNCER_BIN:=/usr/bin/slurm-spire-syncer}"
 : "${SYNCER_METRICS_ADDR:=127.0.0.1:9091}"
 
 : "${JOB_DIR:=/tmp/slurm-spire-jobs}"
